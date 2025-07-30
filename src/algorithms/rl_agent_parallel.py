@@ -212,7 +212,7 @@ class ImprovedDQNAgent:
         # Optimizer with learning rate scheduling
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate, eps=1e-4)
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=50, min_lr=1e-6
+            self.optimizer, mode='min', factor=0.7, patience=200, min_lr=1e-5
         )
         
         # Prioritized replay buffer
@@ -509,33 +509,49 @@ class CirclePlacementEnv:
         max_density = self.original_map.max()
         density_ratio = avg_weight_density / max(max_density, 1)  # 0 to 1
         
-        # Normalize reward with strong emphasis on high-value areas
-        if overlap_ratio > 0.1:  # More than 10% overlap
-            # Scale penalty by overlap ratio, but not too harsh
-            reward = -0.1 - (overlap_ratio * 0.4)  # -0.1 to -0.5 based on overlap
-        elif included_weight <= 0:
-            # No weight collected (empty area)
-            reward = -0.05
+        # Create a smooth reward function that provides continuous feedback
+        
+        # Base reward: quality of placement (0 to 1)
+        # Use sigmoid-like function for smooth transitions
+        quality_score = density_ratio ** 1.5  # Less extreme than squared
+        
+        # Weight collection score (0 to 1)
+        max_possible_weight = np.pi * radius * radius * max_density
+        collection_score = included_weight / max(max_possible_weight, 1)
+        collection_score = np.clip(collection_score, 0, 1)
+        
+        # Combine quality and collection with weights
+        base_reward = (0.7 * quality_score + 0.3 * collection_score)
+        
+        # Apply smooth overlap penalty using exponential decay
+        # This creates a gradient from good to bad placements
+        if overlap_ratio > 0:
+            # Exponential penalty: small overlaps get small penalties, large overlaps get big penalties
+            overlap_penalty = 1 - np.exp(-3 * overlap_ratio)  # 0 to ~0.95 for 0 to 1 overlap
+            reward = base_reward * (1 - overlap_penalty) - 0.1 * overlap_penalty
         else:
-            # Good placement - positive reward
-            # Use a non-linear reward function that strongly favors high-value areas
-            quality_bonus = density_ratio ** 2
-            
-            # Base reward from 0 to 1 based on quality
-            base_reward = quality_bonus * 0.8
-            
-            # Add bonus for collecting weight
-            collection_bonus = min(included_weight / (np.pi * radius * radius * max_density), 0.2)
-            
-            reward = base_reward + collection_bonus  # 0 to 1.0 for best placements
-            
-            # Extra bonus for very high-value placements (top 20% density)
-            if density_ratio > 0.8:
-                reward += 0.2
-            
-            # Small penalty for minor overlap
-            if overlap_ratio > 0:
-                reward *= (1 - overlap_ratio)
+            reward = base_reward
+        
+        # Add small exploration bonus for non-zero density areas
+        if density_ratio > 0.1 and overlap_ratio == 0:
+            reward += 0.05
+        
+        # Distance-based shaping: encourage spreading out (only as a small hint)
+        if len(self.placed_circles) > 0 and overlap_ratio == 0:
+            min_dist = float('inf')
+            for px, py, pr in self.placed_circles:
+                dist = np.sqrt((x - px)**2 + (y - py)**2) - pr - radius
+                min_dist = min(min_dist, dist)
+            # Small bonus for maintaining distance
+            if min_dist > radius * 0.5:
+                reward += 0.02
+        
+        # Smooth penalty for empty areas (instead of hard -0.05)
+        if density_ratio < 0.01:
+            reward = reward * 0.1 - 0.02
+        
+        # Final reward range: approximately -0.2 to 1.05
+        reward = np.clip(reward, -0.3, 1.1)
         
         # Store the placement
         self.placed_circles.append((x, y, radius))
