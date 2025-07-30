@@ -435,26 +435,19 @@ class CirclePlacementEnv:
     
     def _get_state(self):
         """Get the current state representation."""
-        # Normalize the map to [0, 1]
-        if self.current_map.max() > 0:
-            normalized_map = self.current_map / self.original_map.max()  # Normalize by original max
+        # Create state map with clear indication of placed circles
+        # Areas with value 0 in current_map but non-zero in original_map were covered by circles
+        
+        if self.original_map.max() > 0:
+            # Normalize current values by original max
+            normalized_map = self.current_map / self.original_map.max()
+            
+            # Mark already placed areas as -1
+            # These are areas that had value in original but are now 0
+            already_placed = (self.original_map > 0) & (self.current_map == 0)
+            state_map = np.where(already_placed, -1.0, normalized_map)
         else:
-            normalized_map = self.current_map
-        
-        # Create a mask showing already placed circles (-1 for placed areas)
-        # This makes it very clear to the agent where circles have been placed
-        mask = np.ones_like(self.current_map)
-        for x, y, r in self.placed_circles:
-            # Mark the circular area as -1
-            for i in range(int(x - r), int(x + r + 1)):
-                for j in range(int(y - r), int(y + r + 1)):
-                    if 0 <= i < self.map_size and 0 <= j < self.map_size:
-                        if (i - x) ** 2 + (j - y) ** 2 <= r ** 2:
-                            mask[i, j] = -1
-        
-        # Combine normalized map with mask
-        # Where mask is -1, set the normalized map to -1 to clearly indicate "no-go" zones
-        state_map = np.where(mask == -1, -1, normalized_map)
+            state_map = self.current_map
         
         # Current radius (normalized)
         current_radius = self.radii[self.current_radius_idx] / max(self.radii)
