@@ -578,7 +578,7 @@ class CirclePlacementEnv:
     def get_valid_actions_mask(self):
         """
         Get a mask of valid actions (positions where we can place the current circle).
-        This helps avoid placing circles outside the map boundaries.
+        This helps avoid placing circles outside the map boundaries AND on existing circles.
         """
         radius = self.radii[self.current_radius_idx]
         mask = np.ones((self.map_size, self.map_size), dtype=bool)
@@ -588,6 +588,28 @@ class CirclePlacementEnv:
         mask[-int(radius):, :] = False
         mask[:, :int(radius)] = False
         mask[:, -int(radius):] = False
+        
+        # CRITICAL: Mark positions that would overlap with existing circles as invalid
+        for px, py, pr in self.placed_circles:
+            # Calculate minimum distance needed to avoid overlap
+            min_distance = radius + pr
+            
+            # Mark all positions within overlap distance as invalid
+            for i in range(max(0, int(px - min_distance)), min(self.map_size, int(px + min_distance + 1))):
+                for j in range(max(0, int(py - min_distance)), min(self.map_size, int(py + min_distance + 1))):
+                    # Check if this position would cause overlap
+                    dist = np.sqrt((i - px)**2 + (j - py)**2)
+                    if dist < min_distance:
+                        mask[i, j] = False
+        
+        # Also mark positions where there's no value to collect as less desirable
+        # (but still valid in case everything else is blocked)
+        no_value_mask = (self.current_map == 0)
+        
+        # If we have any positions with value, prefer those
+        if np.any(mask & (self.current_map > 0)):
+            # Invalidate zero-value positions if we have better options
+            mask = mask & (self.current_map > 0)
         
         return mask
 
