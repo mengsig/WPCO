@@ -68,9 +68,24 @@ class CirclePlacementEnv:
         """Get the current state representation."""
         # Normalize the map to [0, 1]
         if self.current_map.max() > 0:
-            normalized_map = self.current_map / self.current_map.max()
+            normalized_map = self.current_map / self.original_map.max()  # Normalize by original max
         else:
             normalized_map = self.current_map
+        
+        # Create a mask showing already placed circles (-1 for placed areas)
+        # This makes it very clear to the agent where circles have been placed
+        mask = np.ones_like(self.current_map)
+        for x, y, r in self.placed_circles:
+            # Mark the circular area as -1
+            for i in range(int(x - r), int(x + r + 1)):
+                for j in range(int(y - r), int(y + r + 1)):
+                    if 0 <= i < self.map_size and 0 <= j < self.map_size:
+                        if (i - x) ** 2 + (j - y) ** 2 <= r ** 2:
+                            mask[i, j] = -1
+        
+        # Combine normalized map with mask
+        # Where mask is -1, set the normalized map to -1 to clearly indicate "no-go" zones
+        state_map = np.where(mask == -1, -1, normalized_map)
         
         # Current radius (normalized)
         current_radius = self.radii[self.current_radius_idx] / max(self.radii)
@@ -80,7 +95,7 @@ class CirclePlacementEnv:
         
         # Flatten and concatenate
         state = np.concatenate([
-            normalized_map.flatten(),
+            state_map.flatten(),
             [current_radius, num_placed]
         ])
         
@@ -307,7 +322,5 @@ def compute_included(weighted_matrix, center_x, center_y, radius):
             dy = j + 0.5 - center_y
             if dx * dx + dy * dy <= r2:
                 included_weight += weighted_matrix[i, j]
-                if weighted_matrix[i, j] == 0:
-                    included_weight += -1
                 weighted_matrix[i, j] = 0  # mark as consumed
     return included_weight
