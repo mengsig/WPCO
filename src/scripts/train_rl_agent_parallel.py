@@ -75,7 +75,7 @@ def train_rl_agent_parallel(n_episodes=5000, map_size=64, radii=None,
         gamma=0.99,
         epsilon_start=1.0,
         epsilon_end=0.01,
-        epsilon_decay_steps=n_episodes // 2,  # Slower decay for better exploration
+        epsilon_decay_steps=int(n_episodes * 0.8),  # Decay over 80% of episodes for better exploration
         buffer_size=50000,  # Smaller buffer for faster learning
         batch_size=32,
         tau=0.001,  # Much smaller for stability

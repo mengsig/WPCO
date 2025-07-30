@@ -481,14 +481,29 @@ class CirclePlacementEnv:
         # Calculate reward as the weighted area covered
         included_weight = compute_included(self.current_map, x, y, radius)
         
+        # Check how much of the circle would overlap with already placed circles
+        overlap_penalty = 0
+        circle_area = 0
+        for i in range(max(0, int(x - radius)), min(self.map_size, int(x + radius + 1))):
+            for j in range(max(0, int(y - radius)), min(self.map_size, int(y + radius + 1))):
+                if (i - x) ** 2 + (j - y) ** 2 <= radius ** 2:
+                    circle_area += 1
+                    # Check if this position was already covered
+                    if self.original_map[i, j] > 0 and self.current_map[i, j] == 0:
+                        overlap_penalty += 1
+        
+        overlap_ratio = overlap_penalty / max(circle_area, 1)
+        
         # Normalize reward
-        # If we collected nothing (complete overlap), give large negative reward
-        if included_weight <= 0:
-            reward = -1.0
+        if included_weight <= 0 or overlap_ratio > 0.3:  # 30% or more overlap
+            # Scale penalty by overlap ratio
+            reward = -1.0 - overlap_ratio  # -1.0 to -2.0 based on overlap
         else:
             # Scale by the maximum possible weight for this radius
             max_possible = np.pi * radius * radius * self.original_map.max()
-            reward = included_weight / max(max_possible, 1.0)
+            base_reward = included_weight / max(max_possible, 1.0)
+            # Slight penalty for any overlap
+            reward = base_reward * (1 - overlap_ratio)
         
         # Store the placement
         self.placed_circles.append((x, y, radius))
