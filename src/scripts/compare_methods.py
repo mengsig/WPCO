@@ -69,7 +69,7 @@ def compare_methods(n_maps=5, map_size=64, radii=None, rl_model_path=None):
         return
     
     agent = DQNAgent(map_size=map_size, radii=radii)
-    checkpoint = torch.load(rl_model_path, map_location=torch.device('cpu'))
+    checkpoint = torch.load(rl_model_path, map_location=torch.device('cpu'), weights_only=False)
     agent.q_network.load_state_dict(checkpoint['model_state_dict'])
     agent.epsilon = 0.0  # No exploration during evaluation
     print(f"Loaded RL agent from {rl_model_path}")
