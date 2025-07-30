@@ -28,6 +28,8 @@ class PSO:
     def __init__(
         self,
         loss_func,
+        weighted_matrix,
+        radii,
         n_particles,
         dim,
         n_iterations,
@@ -60,6 +62,8 @@ class PSO:
             np.random.seed(seed)
 
         self.loss_func = loss_func
+        self.weighted_matrix = weighted_matrix.copy()
+        self.radii = radii
         self.n_particles = n_particles
         self.dim = dim
         self.n_iterations = n_iterations
@@ -103,7 +107,9 @@ class PSO:
             velocity = vel_u01
 
             p = Particle(position=position, velocity=velocity)
-            p.loss = self.loss_func(p.position)
+            p.loss = self.loss_func(
+                p.position, self.radii, weighted_matrix_copy=self.weighted_matrix
+            )
             p.best_position = p.position.copy()
             p.best_loss = p.loss
             self.particles.append(p)
@@ -156,7 +162,9 @@ class PSO:
                 p.position = np.minimum(p.position, self.upper_bounds)
 
                 # evaluate new loss
-                p.loss = self.loss_func(p.position)
+                p.loss = self.loss_func(
+                    p.position, self.radii, weighted_matrix_copy=self.weighted_matrix
+                )
 
                 # update personal best
                 if p.loss < p.best_loss:

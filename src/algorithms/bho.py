@@ -38,6 +38,8 @@ class BeehiveOptimization:
     def __init__(
         self,
         loss_func,
+        weighted_matrix,
+        radii,
         n_particles,
         dim,
         n_iterations,
@@ -72,6 +74,8 @@ class BeehiveOptimization:
         """
         if seed is not None:
             np.random.seed(seed)
+        self.weighted_matrix = weighted_matrix.copy()
+        self.radii = radii
         self.loss_func = loss_func
         self.n_particles = n_particles
         self.dim = dim
@@ -140,7 +144,9 @@ class BeehiveOptimization:
                 -self.kappa, self.kappa, dim
             )  # Here we multiply by kappa to allow various starting speeds.
             bee = Bee(pos, vel)
-            bee.loss = self.loss_func(bee.position)
+            bee.loss = self.loss_func(
+                bee.position, self.radii, weighted_matrix_copy=self.weighted_matrix
+            )
             bee.prev_loss = bee.loss + 1.0  # so no pheromone is dropped at t=0
             self.bees.append(bee)
             self.globalIndex += 1
@@ -213,18 +219,15 @@ class BeehiveOptimization:
                 )  # should queen term be normalized
                 # by distanced squared?
 
-                # wasp scattering
-                wasp_term = wasp.position - bee.position
                 # velocity update: v(t) = rho*v(t-1) + c*pheromone_term + q*queen_term
                 bee.velocity = (
                     self.rho * bee.velocity
-                    + self.dt * bee.c * pheromone_term
-                    + self.dt * bee.q * queen_term
-                    - self.dt * self.w * wasp_term
+                    + self.dt * self.c * pheromone_term
+                    + self.dt * self.q * queen_term
                 )
-
                 # position update
-                bee.position += bee.velocity * self.dt
+                dt = np.random.uniform(0.5, 2)
+                bee.position += bee.velocity * dt
 
                 # forcing container 0 to be zero
 
@@ -233,7 +236,9 @@ class BeehiveOptimization:
                 bee.position = np.minimum(bee.position, self.upper_bounds)
 
                 # evaluate new loss
-                new_loss = self.loss_func(bee.position)
+                new_loss = self.loss_func(
+                    bee.position, self.radii, weighted_matrix_copy=self.weighted_matrix
+                )
                 self.globalIndex += 1
                 bee.prev_loss = old_loss
                 bee.loss = new_loss
@@ -246,7 +251,7 @@ class BeehiveOptimization:
                 #                self.pheromones.append(Pheromone(bee.position.copy(), strength))
 
                 strength = bee.prev_loss - bee.loss
-                strength = strength / np.abs(bee.loss) * 100
+                strength = strength / np.abs(bee.loss) * 10000
                 mag_strength = min(np.abs(strength), self.queen.loss)  # *(strength > 0)
                 if strength > 0:
                     strength = mag_strength
