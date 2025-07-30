@@ -20,7 +20,10 @@ Contains the baseline RL implementation:
 
 ### 2. `src/algorithms/rl_agent_parallel.py` (State-of-the-Art)
 Enhanced parallel implementation with advanced features:
-- **ImprovedCirclePlacementNet**: Advanced CNN architecture with attention mechanisms
+- **ImprovedCirclePlacementNet**: Efficient CNN architecture optimized for GPU memory
+  - Convolutional layers with stride for dimension reduction
+  - Removed attention mechanism to prevent OOM errors on consumer GPUs
+  - Batch normalization and dropout for regularization
 - **PrioritizedReplayBuffer**: Prioritized experience replay for efficient learning
 - **ImprovedDQNAgent**: State-of-the-art agent with:
   - Double DQN for reduced overestimation
@@ -28,7 +31,8 @@ Enhanced parallel implementation with advanced features:
   - Soft target updates for stability
   - Gradient clipping and normalization
   - Learning rate scheduling
-  - Detailed performance metrics
+  - GPU support with automatic device selection
+  - Optimized tensor operations to prevent memory warnings
 
 ### 3. `src/scripts/train_rl_agent.py`
 Baseline training script that:
@@ -84,11 +88,15 @@ The improved version will:
 - Save the final model to `results/rl_agent_improved/final_improved_model.pt`
 
 Key improvements in the parallel version:
-- **Faster training**: Parallel environment simulation
-- **Better architecture**: CNN with attention mechanisms
+- **Faster training**: Parallel environment simulation (limited to 4 environments for GPU memory)
+- **Better architecture**: Efficient CNN with spatial pooling (optimized for RTX 4070 8GB)
 - **Advanced techniques**: Double DQN, prioritized replay, n-step returns
 - **Improved epsilon decay**: Decays over 25% of episodes (addresses your concern about epsilon ~0.10 at episode 600)
 - **Better logging**: Comprehensive metrics and statistics
+- **Memory optimizations**: 
+  - Reduced batch size to 32
+  - Efficient numpy array conversion to prevent warnings
+  - Stride convolutions to reduce feature map sizes
 
 ### 3. Running the Demo
 
@@ -199,6 +207,21 @@ Modify the `random_seeder()` function parameters:
 ```python
 weighted_matrix = random_seeder(map_size, time_steps=100000)  # Adjust time_steps
 ```
+
+## Troubleshooting
+
+### GPU Memory Issues
+If you encounter CUDA out of memory errors:
+1. Run the memory test script: `python src/scripts/test_gpu_memory.py`
+2. Reduce batch_size in the training script (default is 32)
+3. Reduce the number of parallel environments
+4. Use CPU training by setting `device=torch.device('cpu')` in the agent initialization
+
+### Tensor Creation Warning
+The warning about creating tensors from numpy arrays has been fixed by converting lists to numpy arrays before creating tensors.
+
+### torch.load Deprecation
+All torch.load calls now include `map_location` parameter to avoid deprecation warnings.
 
 ## Requirements
 

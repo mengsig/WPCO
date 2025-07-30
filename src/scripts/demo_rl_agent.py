@@ -30,7 +30,7 @@ def demo_rl_agent(model_path=None):
     
     print(f"Loading trained RL agent from {model_path}")
     agent = DQNAgent(map_size=map_size, radii=radii)
-    checkpoint = torch.load(model_path)
+    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
     agent.q_network.load_state_dict(checkpoint['model_state_dict'])
     agent.epsilon = 0.0  # No exploration during demo
     

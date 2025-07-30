@@ -16,31 +16,31 @@ class ImprovedCirclePlacementNet(nn.Module):
     Enhanced neural network with attention mechanisms and better architecture.
     """
     
-    def __init__(self, map_size, hidden_size=1024, num_heads=8):
+    def __init__(self, map_size, hidden_size=512, num_heads=4):
         super(ImprovedCirclePlacementNet, self).__init__()
         self.map_size = map_size
         self.input_size = map_size * map_size + 2
         
         # Convolutional layers for spatial feature extraction
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=5, stride=1, padding=2)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        
+        # Calculate the size after convolutions
+        conv_out_size = (map_size // 4) * (map_size // 4) * 128
         
         # Global context vector (radius and num_placed)
-        self.context_fc = nn.Linear(2, 256)
+        self.context_fc = nn.Linear(2, 128)
         
-        # Attention mechanism
-        self.attention = nn.MultiheadAttention(256, num_heads, batch_first=True)
-        
-        # Final layers
-        self.fc1 = nn.Linear(256 + 256, hidden_size)
+        # Simplified architecture without attention for memory efficiency
+        self.fc1 = nn.Linear(conv_out_size + 128, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, map_size * map_size)
         
         # Batch normalization
-        self.bn1 = nn.BatchNorm2d(64)
-        self.bn2 = nn.BatchNorm2d(128)
-        self.bn3 = nn.BatchNorm2d(256)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.bn3 = nn.BatchNorm2d(128)
         
         # Dropout for regularization
         self.dropout = nn.Dropout(0.2)
@@ -52,23 +52,19 @@ class ImprovedCirclePlacementNet(nn.Module):
         map_input = x[:, :-2].view(batch_size, 1, self.map_size, self.map_size)
         context_input = x[:, -2:]
         
-        # Convolutional feature extraction
+        # Convolutional feature extraction with pooling
         conv_out = F.relu(self.bn1(self.conv1(map_input)))
         conv_out = F.relu(self.bn2(self.conv2(conv_out)))
         conv_out = F.relu(self.bn3(self.conv3(conv_out)))
         
-        # Reshape for attention
-        conv_flat = conv_out.view(batch_size, 256, -1).transpose(1, 2)
-        
-        # Apply self-attention
-        attn_out, _ = self.attention(conv_flat, conv_flat, conv_flat)
-        attn_pooled = attn_out.mean(dim=1)  # Global pooling
+        # Flatten convolutional output
+        conv_flat = conv_out.view(batch_size, -1)
         
         # Process context
         context_features = F.relu(self.context_fc(context_input))
         
         # Combine features
-        combined = torch.cat([attn_pooled, context_features], dim=1)
+        combined = torch.cat([conv_flat, context_features], dim=1)
         
         # Final layers
         x = F.relu(self.fc1(combined))
@@ -184,7 +180,7 @@ class ImprovedDQNAgent:
     def __init__(self, map_size=64, radii=None, learning_rate=3e-4, 
                  gamma=0.99, epsilon_start=1.0, epsilon_end=0.01, 
                  epsilon_decay_steps=50000, buffer_size=100000, 
-                 batch_size=64, tau=0.005, n_step=3, 
+                 batch_size=32, tau=0.005, n_step=3, 
                  use_double_dqn=True, use_dueling=True, device=None):
         
         self.map_size = map_size
@@ -298,11 +294,19 @@ class ImprovedDQNAgent:
             return
         
         batch, indices, weights = self.memory.sample(self.batch_size)
-        states = torch.FloatTensor([e[0] for e in batch]).to(self.device)
-        actions = torch.LongTensor([e[1] for e in batch]).to(self.device)
-        rewards = torch.FloatTensor([e[2] for e in batch]).to(self.device)
+        
+        # Convert batch to numpy arrays first for efficiency
+        states_np = np.array([e[0] for e in batch])
+        actions_np = np.array([e[1] for e in batch])
+        rewards_np = np.array([e[2] for e in batch])
         next_states = [e[3] for e in batch]
-        dones = torch.FloatTensor([e[4] for e in batch]).to(self.device)
+        dones_np = np.array([e[4] for e in batch])
+        
+        # Convert to tensors
+        states = torch.FloatTensor(states_np).to(self.device)
+        actions = torch.LongTensor(actions_np).to(self.device)
+        rewards = torch.FloatTensor(rewards_np).to(self.device)
+        dones = torch.FloatTensor(dones_np).to(self.device)
         weights = weights.to(self.device)
         
         # Current Q values
@@ -316,7 +320,8 @@ class ImprovedDQNAgent:
         non_final_mask = torch.tensor([s is not None for s in next_states], dtype=torch.bool).to(self.device)
         
         if non_final_mask.any():
-            non_final_next_states = torch.FloatTensor([s for s in next_states if s is not None]).to(self.device)
+            non_final_next_states_np = np.array([s for s in next_states if s is not None])
+            non_final_next_states = torch.FloatTensor(non_final_next_states_np).to(self.device)
             
             if self.use_double_dqn:
                 # Double DQN: use online network to select action, target network to evaluate

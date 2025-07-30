@@ -77,7 +77,7 @@ def train_rl_agent_parallel(n_episodes=5000, map_size=64, radii=None,
         epsilon_end=0.01,
         epsilon_decay_steps=n_episodes // 4,  # Decay over 25% of episodes
         buffer_size=100000,
-        batch_size=64,
+        batch_size=32,  # Reduced for memory efficiency
         tau=0.005,
         n_step=3,
         use_double_dqn=True
@@ -452,7 +452,7 @@ if __name__ == "__main__":
         map_size=map_size,
         radii=radii,
         save_interval=100,
-        n_parallel=mp.cpu_count() // 2,  # Use half of available CPUs
+        n_parallel=min(4, mp.cpu_count() // 2),  # Limit to 4 for GPU memory
         train_interval=4,
         train_steps=10
     )
