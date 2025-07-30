@@ -40,9 +40,10 @@ def visualize_strategy(env, agent, episode, save_path='advanced_strategy.png'):
         state, reward, done, info = temp_env.step(action)
         
         # Visualize at specific steps
-        if i + 1 in steps_to_show:
-            row = step_idx // 3
-            col = step_idx % 3 + 1
+        if i + 1 in steps_to_show and step_idx < 3:
+            # Place in order: (0,1), (0,2), (1,1)
+            positions = [(0, 1), (0, 2), (1, 1)]
+            row, col = positions[step_idx]
             
             axes[row, col].imshow(temp_env.original_map, cmap='hot', alpha=0.6)
             
