@@ -445,7 +445,14 @@ class CirclePlacementEnv:
             # Mark already placed areas as -1
             # These are areas that had value in original but are now 0
             already_placed = (self.original_map > 0) & (self.current_map == 0)
-            state_map = np.where(already_placed, -1.0, normalized_map)
+            
+            # Also mark areas that are currently zero but were originally zero as 0
+            # to distinguish from high-value areas
+            originally_zero = (self.original_map == 0)
+            
+            state_map = normalized_map.copy()
+            state_map[already_placed] = -1.0  # Already covered by circles
+            state_map[originally_zero] = 0.0  # Originally empty areas
         else:
             state_map = self.current_map
         
@@ -472,20 +479,16 @@ class CirclePlacementEnv:
         radius = self.radii[self.current_radius_idx]
         
         # Calculate reward as the weighted area covered
-        weight_before = np.sum(self.current_map)
         included_weight = compute_included(self.current_map, x, y, radius)
-        weight_after = np.sum(self.current_map)
         
-        # Normalize reward to prevent large values
-        # Scale by the maximum possible weight for this radius
-        max_possible = np.pi * radius * radius * self.original_map.max()
-        normalized_reward = included_weight / max(max_possible, 1.0)
-        
-        # Add small penalty for placing circles in low-value areas
-        if included_weight < max_possible * 0.1:  # Less than 10% of max possible
-            normalized_reward -= 0.1
-        
-        reward = normalized_reward
+        # Normalize reward
+        # If we collected nothing (complete overlap), give large negative reward
+        if included_weight <= 0:
+            reward = -1.0
+        else:
+            # Scale by the maximum possible weight for this radius
+            max_possible = np.pi * radius * radius * self.original_map.max()
+            reward = included_weight / max(max_possible, 1.0)
         
         # Store the placement
         self.placed_circles.append((x, y, radius))
