@@ -164,6 +164,13 @@ def train_rl_agent_parallel(n_episodes=5000, map_size=64, radii=None,
             print(f"  Steps - Current: {episode_steps[-1]}, "
                   f"Avg (last 100): {np.mean(list(steps_window)):.1f}")
             
+            # Debug negative rewards
+            recent_rewards = list(reward_window)
+            negative_count = sum(1 for r in recent_rewards if r < 0)
+            if negative_count > 50:  # More than half are negative
+                print(f"\n  WARNING: {negative_count}/100 episodes had negative rewards!")
+                print(f"  This suggests frequent overlapping placements.")
+            
             # Training metrics
             print(f"\nTRAINING METRICS:")
             print(f"  Epsilon: {stats['epsilon']:.4f}")

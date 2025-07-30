@@ -273,8 +273,9 @@ class ImprovedDQNAgent:
     
     def remember_n_step(self, state, action, reward, next_state, done):
         """Store experience in n-step buffer."""
-        # Clip reward to prevent instability (now rewards are normalized)
-        reward = np.clip(reward, -1, 1)
+        # Clip reward to prevent instability
+        # New reward range is approximately -0.5 to 1.2
+        reward = np.clip(reward, -1.0, 1.5)
         
         self.n_step_buffer.append((state, action, reward, next_state, done))
         
@@ -509,25 +510,32 @@ class CirclePlacementEnv:
         density_ratio = avg_weight_density / max(max_density, 1)  # 0 to 1
         
         # Normalize reward with strong emphasis on high-value areas
-        if included_weight <= 0 or overlap_ratio > 0:  # Any overlap as you mentioned
-            # Scale penalty by overlap ratio
-            reward = -1.0 - overlap_ratio  # -1.0 to -2.0 based on overlap
+        if overlap_ratio > 0.1:  # More than 10% overlap
+            # Scale penalty by overlap ratio, but not too harsh
+            reward = -0.1 - (overlap_ratio * 0.4)  # -0.1 to -0.5 based on overlap
+        elif included_weight <= 0:
+            # No weight collected (empty area)
+            reward = -0.05
         else:
+            # Good placement - positive reward
             # Use a non-linear reward function that strongly favors high-value areas
-            # Square the density ratio to make high values much more attractive
             quality_bonus = density_ratio ** 2
             
             # Base reward from 0 to 1 based on quality
-            base_reward = quality_bonus
+            base_reward = quality_bonus * 0.8
             
-            # Add small bonus for collecting any weight at all
+            # Add bonus for collecting weight
             collection_bonus = min(included_weight / (np.pi * radius * radius * max_density), 0.2)
             
-            reward = base_reward + collection_bonus  # 0 to 1.2 for best placements
+            reward = base_reward + collection_bonus  # 0 to 1.0 for best placements
             
             # Extra bonus for very high-value placements (top 20% density)
             if density_ratio > 0.8:
-                reward += 0.3
+                reward += 0.2
+            
+            # Small penalty for minor overlap
+            if overlap_ratio > 0:
+                reward *= (1 - overlap_ratio)
         
         # Store the placement
         self.placed_circles.append((x, y, radius))
