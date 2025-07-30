@@ -1,1 +1,5 @@
 wcpo_venv/
+src/__pycache__/
+src/algorithms/__pycache__/
+src/scripts/__pycache__/
+src/utils/__pycache__/
