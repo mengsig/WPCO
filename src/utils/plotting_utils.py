@@ -23,7 +23,7 @@ class plot_defaults:
         )
 
 
-def PlotLosses(history, history_best=None, savename=None, showPlot=False):
+def plot_losses(history, history_best=None, savename=None, showPlot=False):
     plot_defaults()
     import numpy as np
 

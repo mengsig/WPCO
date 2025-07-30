@@ -2,25 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 import sys
-import os
-
-# Append the utils directory to the system path for importing PlotDefaults, etc.
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "utils")))
-
-from PlotDefaults import PlotDefaults
-from LossFunctions import (
-    rosenbrock_nd,
-    beale_2d,
-    keane_bump_nd,
-    shekel_nd,
-    rastrigin_nd,
-    goldstein_price,
-    ackley_nd,
-    griewank_nd,
-    sphere_nd,
-    zakharov_nd,
-    ellipsoid_nd,
-)
 
 
 # =============================================================================
