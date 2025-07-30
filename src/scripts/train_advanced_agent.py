@@ -66,21 +66,29 @@ def visualize_strategy(env, agent, episode, save_path='advanced_strategy.png'):
     axes[1, 0].axis('off')
     
     # Feature visualization
-    features = state['raw_features']
     axes[1, 1].imshow(temp_env.current_map, cmap='hot')
     axes[1, 1].set_title('Remaining Values')
     axes[1, 1].axis('off')
     
-    # Cluster visualization
-    if features['clusters']:
-        cluster_map = np.zeros_like(temp_env.current_map)
-        for i, cluster in enumerate(features['clusters'][:5]):
-            for pos in cluster['positions']:
-                cluster_map[pos[0], pos[1]] = (i + 1) * 50
-        axes[1, 2].imshow(cluster_map, cmap='tab10')
-        axes[1, 2].set_title('Value Clusters')
+    # Cluster visualization - get features before last step
+    if temp_env.current_radius_idx < len(temp_env.radii):
+        # Get current state features
+        current_state = temp_env._get_enhanced_state()
+        if current_state and 'raw_features' in current_state:
+            features = current_state['raw_features']
+            if features['clusters']:
+                cluster_map = np.zeros_like(temp_env.current_map)
+                for i, cluster in enumerate(features['clusters'][:5]):
+                    for pos in cluster['positions']:
+                        cluster_map[pos[0], pos[1]] = (i + 1) * 50
+                axes[1, 2].imshow(cluster_map, cmap='tab10')
+                axes[1, 2].set_title('Value Clusters')
+            else:
+                axes[1, 2].text(0.5, 0.5, 'No clusters', ha='center', va='center')
+        else:
+            axes[1, 2].text(0.5, 0.5, 'Episode complete', ha='center', va='center')
     else:
-        axes[1, 2].text(0.5, 0.5, 'No clusters', ha='center', va='center')
+        axes[1, 2].text(0.5, 0.5, 'All circles placed', ha='center', va='center')
     axes[1, 2].axis('off')
     
     plt.suptitle(f'Advanced Agent Strategy - Episode {episode}')
