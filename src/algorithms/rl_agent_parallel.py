@@ -494,16 +494,40 @@ class CirclePlacementEnv:
         
         overlap_ratio = overlap_penalty / max(circle_area, 1)
         
-        # Normalize reward
-        if included_weight <= 0 or overlap_ratio > 0.3:  # 30% or more overlap
+        # Calculate the average weight density in the placed circle area
+        # This helps differentiate between high-value and low-value placements
+        cells_in_circle = 0
+        total_original_weight = 0
+        for i in range(max(0, int(x - radius)), min(self.map_size, int(x + radius + 1))):
+            for j in range(max(0, int(y - radius)), min(self.map_size, int(y + radius + 1))):
+                if (i - x) ** 2 + (j - y) ** 2 <= radius ** 2:
+                    cells_in_circle += 1
+                    total_original_weight += self.original_map[i, j]
+        
+        avg_weight_density = total_original_weight / max(cells_in_circle, 1)
+        max_density = self.original_map.max()
+        density_ratio = avg_weight_density / max(max_density, 1)  # 0 to 1
+        
+        # Normalize reward with strong emphasis on high-value areas
+        if included_weight <= 0 or overlap_ratio > 0:  # Any overlap as you mentioned
             # Scale penalty by overlap ratio
             reward = -1.0 - overlap_ratio  # -1.0 to -2.0 based on overlap
         else:
-            # Scale by the maximum possible weight for this radius
-            max_possible = np.pi * radius * radius * self.original_map.max()
-            base_reward = included_weight / max(max_possible, 1.0)
-            # Slight penalty for any overlap
-            reward = base_reward * (1 - overlap_ratio)
+            # Use a non-linear reward function that strongly favors high-value areas
+            # Square the density ratio to make high values much more attractive
+            quality_bonus = density_ratio ** 2
+            
+            # Base reward from 0 to 1 based on quality
+            base_reward = quality_bonus
+            
+            # Add small bonus for collecting any weight at all
+            collection_bonus = min(included_weight / (np.pi * radius * radius * max_density), 0.2)
+            
+            reward = base_reward + collection_bonus  # 0 to 1.2 for best placements
+            
+            # Extra bonus for very high-value placements (top 20% density)
+            if density_ratio > 0.8:
+                reward += 0.3
         
         # Store the placement
         self.placed_circles.append((x, y, radius))
