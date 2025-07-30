@@ -7,7 +7,13 @@ from collections import deque
 import random
 import math
 from numba import njit
-from scipy.ndimage import label, maximum_filter
+try:
+    from scipy.ndimage import label, maximum_filter, gaussian_filter
+except ImportError:
+    print("Warning: scipy not available. Some features will be limited.")
+    label = None
+    maximum_filter = None
+    gaussian_filter = None
 
 
 class HeatmapFeatureExtractor:
@@ -25,7 +31,12 @@ class HeatmapFeatureExtractor:
         high_value_mask = heatmap > threshold
         
         # 2. Identify connected components (clusters)
-        labeled_array, num_clusters = label(high_value_mask)
+        if label is not None:
+            labeled_array, num_clusters = label(high_value_mask)
+        else:
+            # Fallback: treat all high-value areas as one cluster
+            labeled_array = high_value_mask.astype(int)
+            num_clusters = 1 if np.any(high_value_mask) else 0
         
         # 3. Calculate cluster properties
         clusters = []
@@ -57,16 +68,36 @@ class HeatmapFeatureExtractor:
         features['num_clusters'] = len(clusters)
         
         # 4. Calculate coverage potential for current radius
-        # Use maximum filter to find best positions
-        footprint = np.zeros((2*radius+1, 2*radius+1))
-        for i in range(2*radius+1):
-            for j in range(2*radius+1):
-                if (i-radius)**2 + (j-radius)**2 <= radius**2:
-                    footprint[i,j] = 1
-        
-        potential_values = maximum_filter(heatmap, footprint=footprint, mode='constant')
-        features['best_positions'] = np.argwhere(potential_values == potential_values.max())
-        features['max_potential'] = potential_values.max()
+        if maximum_filter is not None:
+            # Use maximum filter to find best positions
+            footprint = np.zeros((2*radius+1, 2*radius+1))
+            for i in range(2*radius+1):
+                for j in range(2*radius+1):
+                    if (i-radius)**2 + (j-radius)**2 <= radius**2:
+                        footprint[i,j] = 1
+            
+            potential_values = maximum_filter(heatmap, footprint=footprint, mode='constant')
+            features['best_positions'] = np.argwhere(potential_values == potential_values.max())
+            features['max_potential'] = potential_values.max()
+        else:
+            # Fallback: find positions with highest local average
+            best_val = 0
+            best_positions = []
+            for x in range(radius, heatmap.shape[0] - radius):
+                for y in range(radius, heatmap.shape[1] - radius):
+                    local_sum = 0
+                    for i in range(max(0, x-radius), min(heatmap.shape[0], x+radius+1)):
+                        for j in range(max(0, y-radius), min(heatmap.shape[1], y+radius+1)):
+                            if (i-x)**2 + (j-y)**2 <= radius**2:
+                                local_sum += heatmap[i, j]
+                    if local_sum > best_val:
+                        best_val = local_sum
+                        best_positions = [(x, y)]
+                    elif local_sum == best_val:
+                        best_positions.append((x, y))
+            
+            features['best_positions'] = np.array(best_positions) if best_positions else np.array([[radius, radius]])
+            features['max_potential'] = best_val
         
         return features
 
@@ -165,6 +196,10 @@ class AdvancedCirclePlacementEnv:
     
     def _get_enhanced_state(self):
         """Get rich state representation with human-like features."""
+        # Handle case when all circles are placed
+        if self.current_radius_idx >= len(self.radii):
+            return None
+            
         radius = self.radii[self.current_radius_idx]
         
         # Extract strategic features
@@ -194,8 +229,12 @@ class AdvancedCirclePlacementEnv:
     def _get_value_density_map(self):
         """Create a smoothed value density map."""
         # Apply gaussian smoothing to highlight high-value regions
-        from scipy.ndimage import gaussian_filter
-        density = gaussian_filter(self.current_map, sigma=3.0)
+        if gaussian_filter is not None:
+            density = gaussian_filter(self.current_map, sigma=3.0)
+        else:
+            # Simple averaging as fallback
+            density = self.current_map.copy()
+        
         if density.max() > 0:
             density = density / density.max()
         return density
@@ -367,6 +406,9 @@ class AdvancedCirclePlacementEnv:
                 reward += 1.0
             elif coverage > 0.6:
                 reward += 0.5
+            
+            # Return None for next state when done
+            return None, reward, done, info
         
         return self._get_enhanced_state(), reward, done, info
     
