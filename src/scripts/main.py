@@ -17,10 +17,7 @@ SAVE = False
 
 if __name__ == "__main__":
     seed = np.random.randint(10000)
-    print(seed)
-
-    savefolder = "resultsBHO/"
-    os.makedirs(savefolder, exist_ok=True)
+    print(f"Running with seed: {seed}")
 
     dim = 10
     n_particles = 15
