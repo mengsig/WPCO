@@ -71,15 +71,15 @@ def train_rl_agent_parallel(n_episodes=5000, map_size=64, radii=None,
     agent = ImprovedDQNAgent(
         map_size=map_size,
         radii=radii,
-        learning_rate=3e-4,
+        learning_rate=1e-4,  # Reduced for stability
         gamma=0.99,
         epsilon_start=1.0,
         epsilon_end=0.01,
-        epsilon_decay_steps=n_episodes // 4,  # Decay over 25% of episodes
-        buffer_size=100000,
-        batch_size=32,  # Reduced for memory efficiency
-        tau=0.005,
-        n_step=3,
+        epsilon_decay_steps=n_episodes // 2,  # Slower decay for better exploration
+        buffer_size=50000,  # Smaller buffer for faster learning
+        batch_size=32,
+        tau=0.001,  # Much smaller for stability
+        n_step=1,  # Single step for stability
         use_double_dqn=True
     )
     

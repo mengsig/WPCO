@@ -177,17 +177,17 @@ class ImprovedDQNAgent:
     Enhanced DQN agent with advanced features.
     """
     
-    def __init__(self, map_size=64, radii=None, learning_rate=3e-4, 
+    def __init__(self, map_size=64, radii=None, learning_rate=1e-4, 
                  gamma=0.99, epsilon_start=1.0, epsilon_end=0.01, 
                  epsilon_decay_steps=50000, buffer_size=100000, 
-                 batch_size=32, tau=0.005, n_step=3, 
+                 batch_size=32, tau=0.001, n_step=1, 
                  use_double_dqn=True, use_dueling=True, device=None):
         
         self.map_size = map_size
         self.radii = radii if radii is not None else [12, 8, 7, 6, 5, 4, 3, 2, 1]
         self.gamma = gamma
         self.n_step = n_step
-        self.tau = tau  # Soft update parameter
+        self.tau = tau  # Soft update parameter (reduced for stability)
         self.use_double_dqn = use_double_dqn
         self.batch_size = batch_size
         
@@ -210,13 +210,13 @@ class ImprovedDQNAgent:
         self.target_network.load_state_dict(self.q_network.state_dict())
         
         # Optimizer with learning rate scheduling
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=100000, eta_min=learning_rate/10
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate, eps=1e-4)
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.5, patience=50, min_lr=1e-6
         )
         
         # Prioritized replay buffer
-        self.memory = PrioritizedReplayBuffer(buffer_size)
+        self.memory = PrioritizedReplayBuffer(buffer_size, alpha=0.6, beta_start=0.4)
         
         # N-step buffer
         self.n_step_buffer = deque(maxlen=n_step)
@@ -226,6 +226,10 @@ class ImprovedDQNAgent:
         self.rewards = []
         self.q_values = []
         self.gradient_norms = []
+        
+        # For stability
+        self.update_counter = 0
+        self.target_update_frequency = 1000  # Update target network every N steps
         
     def update_epsilon(self):
         """Update epsilon using exponential decay."""
@@ -253,6 +257,8 @@ class ImprovedDQNAgent:
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             with torch.no_grad():
                 q_values = self.q_network(state_tensor).squeeze(0).cpu()
+                # Clip Q-values to prevent explosion
+                q_values = torch.clamp(q_values, -1000, 1000)
                 self.q_values.append(q_values.max().item())
             
             # Apply valid mask if provided
@@ -267,6 +273,9 @@ class ImprovedDQNAgent:
     
     def remember_n_step(self, state, action, reward, next_state, done):
         """Store experience in n-step buffer."""
+        # Clip reward to prevent instability (now rewards are normalized)
+        reward = np.clip(reward, -1, 1)
+        
         self.n_step_buffer.append((state, action, reward, next_state, done))
         
         if len(self.n_step_buffer) == self.n_step or done:
@@ -337,33 +346,46 @@ class ImprovedDQNAgent:
                     next_q_values[non_final_mask] = self.target_network(non_final_next_states).view(
                         non_final_mask.sum(), -1).max(1)[0]
         
-        # Compute targets
+        # Compute targets with clipping
         targets = rewards + (1 - dones) * (self.gamma ** self.n_step) * next_q_values
+        targets = targets.detach()
+        
+        # Clip targets to prevent instability
+        targets = torch.clamp(targets, -1000, 1000)
         
         # Compute TD errors for prioritized replay
         td_errors = torch.abs(current_q_values - targets).detach()
         
-        # Weighted loss
+        # Huber loss for stability
         loss = (weights * F.smooth_l1_loss(current_q_values, targets, reduction='none')).mean()
         
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()
         
-        # Gradient clipping
-        grad_norm = clip_grad_norm_(self.q_network.parameters(), max_norm=10)
+        # Gradient clipping (reduced threshold)
+        grad_norm = clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
         self.gradient_norms.append(grad_norm.item())
         
         self.optimizer.step()
-        self.scheduler.step()
+        
+        # Update learning rate scheduler
+        if len(self.losses) > 0:
+            self.scheduler.step(np.mean(self.losses[-100:]))
         
         # Update priorities
         self.memory.update_priorities(indices, td_errors.cpu().numpy() + 1e-6)
         
         self.losses.append(loss.item())
         
-        # Soft update target network
-        self.soft_update_target_network()
+        # Update target network periodically (hard update)
+        self.update_counter += 1
+        if self.update_counter % self.target_update_frequency == 0:
+            self.update_target_network()
+    
+    def update_target_network(self):
+        """Hard update of target network parameters."""
+        self.target_network.load_state_dict(self.q_network.state_dict())
     
     def soft_update_target_network(self):
         """Soft update of target network parameters."""
@@ -446,8 +468,16 @@ class CirclePlacementEnv:
         included_weight = compute_included(self.current_map, x, y, radius)
         weight_after = np.sum(self.current_map)
         
-        # Reward is the actual weight collected
-        reward = included_weight
+        # Normalize reward to prevent large values
+        # Scale by the maximum possible weight for this radius
+        max_possible = np.pi * radius * radius * self.original_map.max()
+        normalized_reward = included_weight / max(max_possible, 1.0)
+        
+        # Add small penalty for placing circles in low-value areas
+        if included_weight < max_possible * 0.1:  # Less than 10% of max possible
+            normalized_reward -= 0.1
+        
+        reward = normalized_reward
         
         # Store the placement
         self.placed_circles.append((x, y, radius))
