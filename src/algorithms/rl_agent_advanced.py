@@ -449,28 +449,23 @@ def random_seeder(dim, time_steps=10000):
     x = np.random.uniform(0, 1, (dim, dim))
     seed_pos_x = int(np.random.uniform(0, dim))
     seed_pos_y = int(np.random.uniform(0, dim))
-    
-    x[seed_pos_x, seed_pos_y] = 10
-    
-    for t in range(time_steps):
-        i = int(np.random.uniform(0, dim))
-        j = int(np.random.uniform(0, dim))
-        
-        if np.random.uniform(0, 1) < 0.5:
-            avg = 0
-            count = 0
-            for di in [-1, 0, 1]:
-                for dj in [-1, 0, 1]:
-                    ni, nj = i + di, j + dj
-                    if 0 <= ni < dim and 0 <= nj < dim:
-                        avg += x[ni, nj]
-                        count += 1
-            x[i, j] = avg / count
+    tele_prob = 0.001
+    for i in range(time_steps):
+        x[seed_pos_x, seed_pos_y] += np.random.uniform(0, 1)
+        if np.random.uniform() < tele_prob:
+            seed_pos_x = int(np.random.uniform(0, dim))
+            seed_pos_y = int(np.random.uniform(0, dim))
         else:
-            i2 = int(np.random.uniform(0, dim))
-            j2 = int(np.random.uniform(0, dim))
-            x[i, j], x[i2, j2] = x[i2, j2], x[i, j]
-    
+            if np.random.uniform() < 0.5:
+                seed_pos_x += 1
+            if np.random.uniform() < 0.5:
+                seed_pos_x += -1
+            if np.random.uniform() < 0.5:
+                seed_pos_y += 1
+            if np.random.uniform() < 0.5:
+                seed_pos_y += -1
+            seed_pos_x = int(max(min(seed_pos_x, dim - 1), 0))
+            seed_pos_y = int(max(min(seed_pos_y, dim - 1), 0))
     return x
 
 
