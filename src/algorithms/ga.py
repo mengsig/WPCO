@@ -9,10 +9,19 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "u
 
 from PlotDefaults import PlotDefaults
 from LossFunctions import (
-    rosenbrock_nd, beale_2d, keane_bump_nd, shekel_nd, 
-    rastrigin_nd, goldstein_price, ackley_nd, griewank_nd, 
-    sphere_nd, zakharov_nd, ellipsoid_nd
+    rosenbrock_nd,
+    beale_2d,
+    keane_bump_nd,
+    shekel_nd,
+    rastrigin_nd,
+    goldstein_price,
+    ackley_nd,
+    griewank_nd,
+    sphere_nd,
+    zakharov_nd,
+    ellipsoid_nd,
 )
+
 
 class GeneticAlgorithm:
     """
@@ -32,7 +41,7 @@ class GeneticAlgorithm:
         elitism_ratio=0.1,
         init_range=5.0,
         initial_guess=[],
-        seed=None
+        seed=None,
     ):
         """
         Args:
@@ -77,10 +86,14 @@ class GeneticAlgorithm:
         for _ in range(pop_size):
             pos_u01 = np.random.rand(dim)
             if len(initial_guess) == 0:
-                position = self.lower_bounds + pos_u01*(self.upper_bounds - self.lower_bounds)
+                position = self.lower_bounds + pos_u01 * (
+                    self.upper_bounds - self.lower_bounds
+                )
             else:
                 # partial "initial guess"
-                position = np.array(initial_guess) + 0.2*pos_u01*(self.upper_bounds - self.lower_bounds)
+                position = np.array(initial_guess) + 0.2 * pos_u01 * (
+                    self.upper_bounds - self.lower_bounds
+                )
             self.population.append(position)
         self.population = np.array(self.population, dtype=float)
 
@@ -112,7 +125,7 @@ class GeneticAlgorithm:
 
     def run(self):
         """
-        Run the GA for n_iterations generations, 
+        Run the GA for n_iterations generations,
         storing the best solution and printing a progress bar.
         """
         for t in range(self.n_iterations):
@@ -126,7 +139,7 @@ class GeneticAlgorithm:
             elites = self.population[sorted_indices[:n_elites]]
             new_population.extend(elites)
 
-            # For the rest, we do pairs of parents from the population, 
+            # For the rest, we do pairs of parents from the population,
             # then possibly crossover, then mutate.
             while len(new_population) < self.pop_size:
                 parent1 = self._select_parent()
@@ -144,7 +157,7 @@ class GeneticAlgorithm:
                     new_population.append(child2)
 
             # convert new_population to array
-            self.population = np.array(new_population[:self.pop_size], dtype=float)
+            self.population = np.array(new_population[: self.pop_size], dtype=float)
 
             # 2) Enforce domain constraints
             self.population = np.maximum(self.population, self.lower_bounds)
@@ -175,7 +188,7 @@ class GeneticAlgorithm:
                 best_pos_str = f"{short_vec}..."
 
             msg = (
-                f"\rIteration {t+1}/{self.n_iterations} [{bar}] "
+                f"\rIteration {t + 1}/{self.n_iterations} [{bar}] "
                 f"Best Loss: {self.global_best_loss:.4f} "
                 f"Best Pos: {best_pos_str} "
             )
@@ -187,7 +200,7 @@ class GeneticAlgorithm:
 
     def _select_parent(self):
         """
-        Parent selection method. 
+        Parent selection method.
         We'll do a simple "roulette wheel" selection based on 1 / loss.
         Alternatively, you could do tournament selection or rank selection.
         """
@@ -225,7 +238,7 @@ class GeneticAlgorithm:
             if np.random.rand() < self.mutation_rate:
                 # shift with some fraction of domain size
                 range_size = self.upper_bounds[i] - self.lower_bounds[i]
-                mutation_amount = 0.1 * range_size * (2*np.random.rand() - 1)
+                mutation_amount = 0.1 * range_size * (2 * np.random.rand() - 1)
                 individual[i] += mutation_amount
         return individual
 
@@ -235,8 +248,10 @@ class GeneticAlgorithm:
     def animate_evolution_2d(
         self,
         gif_filename="ga_evolution.gif",
-        xlim=(-5,5), ylim=(-5,5),
-        fps=5, resolution=100
+        xlim=(-5, 5),
+        ylim=(-5, 5),
+        fps=5,
+        resolution=100,
     ):
         """
         If dim=2, creates an animated GIF of all iterations, showing:
@@ -258,13 +273,17 @@ class GeneticAlgorithm:
             for j in range(resolution):
                 Z_grid[i, j] = self.loss_func([X_grid[i, j], Y_grid[i, j]])
 
-        fig, ax = plt.subplots(figsize=(8,7))
-        heatmap = ax.pcolormesh(X_grid, Y_grid, Z_grid, shading='auto', cmap='hot', norm="log")
-        fig.colorbar(heatmap, ax=ax, label='Loss')
+        fig, ax = plt.subplots(figsize=(8, 7))
+        heatmap = ax.pcolormesh(
+            X_grid, Y_grid, Z_grid, shading="auto", cmap="hot", norm="log"
+        )
+        fig.colorbar(heatmap, ax=ax, label="Loss")
 
         # Scatter objects for the population and the global best
-        scat_population = ax.scatter([], [], color='blue', s=10, label='Population')
-        scat_gbest = ax.scatter([], [], color='red', s=120, marker='*', label='Global Best')
+        scat_population = ax.scatter([], [], color="blue", s=10, label="Population")
+        scat_gbest = ax.scatter(
+            [], [], color="red", s=120, marker="*", label="Global Best"
+        )
 
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
@@ -274,8 +293,8 @@ class GeneticAlgorithm:
         ax.legend()
 
         def init():
-            scat_population.set_offsets(np.empty((0,2)))
-            scat_gbest.set_offsets(np.empty((0,2)))
+            scat_population.set_offsets(np.empty((0, 2)))
+            scat_gbest.set_offsets(np.empty((0, 2)))
             return scat_population, scat_gbest
 
         def update(frame):
@@ -286,22 +305,25 @@ class GeneticAlgorithm:
             scat_population.set_offsets(positions)
             scat_gbest.set_offsets([gbest_pos])
 
-            ax.set_title(f"Iteration {frame+1}/{self.n_iterations}")
+            ax.set_title(f"Iteration {frame + 1}/{self.n_iterations}")
             return scat_population, scat_gbest
 
         n_frames = len(self.history_positions)
-        anim = FuncAnimation(fig, update, frames=n_frames, init_func=init,
-                             blit=True, interval=200)
+        anim = FuncAnimation(
+            fig, update, frames=n_frames, init_func=init, blit=True, interval=200
+        )
 
         writer = PillowWriter(fps=fps)
         anim.save(gif_filename, writer=writer)
         plt.close(fig)
         print(f"Animation saved to {gif_filename}")
 
-    def visualize_snapshot_2d(self, iteration=None, xlim=(-5,5), ylim=(-5,5), resolution=100):
+    def visualize_snapshot_2d(
+        self, iteration=None, xlim=(-5, 5), ylim=(-5, 5), resolution=100
+    ):
         """
         Plots a snapshot of the population and the global best at a given iteration
-        overlaid with a heatmap of the loss function. If iteration is None, 
+        overlaid with a heatmap of the loss function. If iteration is None,
         uses the last iteration. Only valid for dim=2.
         """
         if self.dim != 2:
@@ -320,21 +342,31 @@ class GeneticAlgorithm:
             for j in range(resolution):
                 Z_grid[i, j] = self.loss_func([X_grid[i, j], Y_grid[i, j]])
 
-        fig, ax = plt.subplots(figsize=(8,7))
-        heatmap = ax.pcolormesh(X_grid, Y_grid, Z_grid, shading='auto', cmap='hot', norm="log")
-        fig.colorbar(heatmap, ax=ax, label='Loss')
+        fig, ax = plt.subplots(figsize=(8, 7))
+        heatmap = ax.pcolormesh(
+            X_grid, Y_grid, Z_grid, shading="auto", cmap="hot", norm="log"
+        )
+        fig.colorbar(heatmap, ax=ax, label="Loss")
 
         positions = self.history_positions[iteration]
         gbest_pos = self.history_best_position[iteration]
 
-        ax.scatter(positions[:,0], positions[:,1], color='blue', s=10, label='Population')
-        ax.scatter(gbest_pos[0], gbest_pos[1], color='red', s=120, marker='*', label='Global Best')
+        ax.scatter(
+            positions[:, 0], positions[:, 1], color="blue", s=10, label="Population"
+        )
+        ax.scatter(
+            gbest_pos[0],
+            gbest_pos[1],
+            color="red",
+            s=120,
+            marker="*",
+            label="Global Best",
+        )
 
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
         ax.set_xlabel("x")
         ax.set_ylabel("y")
-        ax.set_title(f"Snapshot at Iteration {iteration+1}/{self.n_iterations}")
+        ax.set_title(f"Snapshot at Iteration {iteration + 1}/{self.n_iterations}")
         ax.legend()
         plt.show()
-

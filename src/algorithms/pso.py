@@ -9,25 +9,35 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "u
 
 from PlotDefaults import PlotDefaults
 from LossFunctions import (
-    rosenbrock_nd, beale_2d, keane_bump_nd, shekel_nd, 
-    rastrigin_nd, goldstein_price, ackley_nd, griewank_nd, 
-    sphere_nd, zakharov_nd, ellipsoid_nd
+    rosenbrock_nd,
+    beale_2d,
+    keane_bump_nd,
+    shekel_nd,
+    rastrigin_nd,
+    goldstein_price,
+    ackley_nd,
+    griewank_nd,
+    sphere_nd,
+    zakharov_nd,
+    ellipsoid_nd,
 )
+
 
 # =============================================================================
 # Particle Class
 # =============================================================================
 class Particle:
     """
-    Stores a single particle's position, velocity, loss, 
+    Stores a single particle's position, velocity, loss,
     plus its personal-best position and best loss so far.
     """
+
     def __init__(self, position, velocity, loss=None):
         self.position = np.array(position, dtype=float)
         self.velocity = np.array(velocity, dtype=float)
-        self.loss = loss              # current loss
-        self.best_position = None     # personal-best position
-        self.best_loss = np.inf       # personal-best loss
+        self.loss = loss  # current loss
+        self.best_position = None  # personal-best position
+        self.best_loss = np.inf  # personal-best loss
 
 
 # =============================================================================
@@ -40,14 +50,14 @@ class PSO:
         n_particles,
         dim,
         n_iterations,
-        w=0.7,             # inertia weight
-        c1=1.5,            # cognitive (personal) acceleration
-        c2=1.5,            # social (global) acceleration
-        init_range=5.0,    # range for random initialization, used if bounds=None
-        lower_bounds=None, # scalar or array of shape (dim,)
-        upper_bounds=None, # scalar or array of shape (dim,)
+        w=0.7,  # inertia weight
+        c1=1.5,  # cognitive (personal) acceleration
+        c2=1.5,  # social (global) acceleration
+        init_range=5.0,  # range for random initialization, used if bounds=None
+        lower_bounds=None,  # scalar or array of shape (dim,)
+        upper_bounds=None,  # scalar or array of shape (dim,)
         initial_guess=[],
-        seed=None
+        seed=None,
     ):
         """
         Particle Swarm Optimization for a user-specified loss function to MINIMIZE.
@@ -76,27 +86,39 @@ class PSO:
         self.c1 = c1
         self.c2 = c2
         self.init_range = init_range
-        
+
         # set up domain
         if lower_bounds is None:
             lower_bounds = -init_range
         if upper_bounds is None:
             upper_bounds = init_range
 
-        self.lower_bounds = np.full(dim, lower_bounds) if np.isscalar(lower_bounds) else np.array(lower_bounds)
-        self.upper_bounds = np.full(dim, upper_bounds) if np.isscalar(upper_bounds) else np.array(upper_bounds)
+        self.lower_bounds = (
+            np.full(dim, lower_bounds)
+            if np.isscalar(lower_bounds)
+            else np.array(lower_bounds)
+        )
+        self.upper_bounds = (
+            np.full(dim, upper_bounds)
+            if np.isscalar(upper_bounds)
+            else np.array(upper_bounds)
+        )
 
         # Create particles
         self.particles = []
         for _ in range(n_particles):
             # random in [0,1], scaled to domain
             pos_u01 = np.random.rand(dim)
-            vel_u01 = np.random.uniform(-1, 1, dim)*0.2
+            vel_u01 = np.random.uniform(-1, 1, dim) * 0.2
             if len(initial_guess) == 0:
-                position = self.lower_bounds + pos_u01*(self.upper_bounds - self.lower_bounds)
+                position = self.lower_bounds + pos_u01 * (
+                    self.upper_bounds - self.lower_bounds
+                )
             else:
                 # For a partial "initial guess"
-                position = np.array(initial_guess) + 0.2*pos_u01*(self.upper_bounds - self.lower_bounds)
+                position = np.array(initial_guess) + 0.2 * pos_u01 * (
+                    self.upper_bounds - self.lower_bounds
+                )
             velocity = vel_u01
 
             p = Particle(position=position, velocity=velocity)
@@ -111,7 +133,7 @@ class PSO:
 
         # For logging & potential visualization
         self.history_positions = []  # list of (n_particles x dim) arrays
-        self.history_losses = []     # list of shape [n_particles]
+        self.history_losses = []  # list of shape [n_particles]
         self.history_best_loss = []  # list of best-loss so far
         self.history_best_position = []  # track best solution so far
 
@@ -129,7 +151,7 @@ class PSO:
 
     def run(self):
         """
-        Runs the PSO for n_iterations, 
+        Runs the PSO for n_iterations,
         storing the history for visualization and printing a progress bar.
         """
         for t in range(self.n_iterations):
@@ -139,10 +161,10 @@ class PSO:
                 r1 = np.random.rand(self.dim)
                 r2 = np.random.rand(self.dim)
 
-                # velocity update: 
+                # velocity update:
                 # v <- w*v + c1*r1*(pbest - x) + c2*r2*(gbest - x)
                 cognitive_term = self.c1 * r1 * (p.best_position - p.position)
-                social_term    = self.c2 * r2 * (self.global_best_position - p.position)
+                social_term = self.c2 * r2 * (self.global_best_position - p.position)
                 p.velocity = self.w * p.velocity + cognitive_term + social_term
 
                 # position update
@@ -171,10 +193,10 @@ class PSO:
             self.history_best_loss.append(self.global_best_loss)
             self.history_best_position.append(self.global_best_position.copy())
 
-            # 4) Print progress 
-            fraction = (t+1)/self.n_iterations
+            # 4) Print progress
+            fraction = (t + 1) / self.n_iterations
             bar_length = 30
-            filled_length = int(bar_length*fraction)
+            filled_length = int(bar_length * fraction)
             bar = "#" * filled_length + "-" * (bar_length - filled_length)
             # Truncate best position if dimension > 5
             if self.dim <= 5:
@@ -183,7 +205,7 @@ class PSO:
                 short_vec = np.round(self.global_best_position[:3], 4)
                 best_pos_str = f"{short_vec}..."
             msg = (
-                f"\rIteration {t+1}/{self.n_iterations} [{bar}] "
+                f"\rIteration {t + 1}/{self.n_iterations} [{bar}] "
                 f"Best Loss: {self.global_best_loss:.4f} "
                 f"Best Pos: {best_pos_str} "
             )
@@ -199,8 +221,10 @@ class PSO:
     def animate_evolution_2d(
         self,
         gif_filename="pso_evolution.gif",
-        xlim=(-5,5), ylim=(-5,5),
-        fps=5, resolution=100
+        xlim=(-5, 5),
+        ylim=(-5, 5),
+        fps=5,
+        resolution=100,
     ):
         """
         If dim=2, creates an animated GIF of all iterations, showing:
@@ -222,13 +246,17 @@ class PSO:
             for j in range(resolution):
                 Z_grid[i, j] = self.loss_func([X_grid[i, j], Y_grid[i, j]])
 
-        fig, ax = plt.subplots(figsize=(8,7))
-        heatmap = ax.pcolormesh(X_grid, Y_grid, Z_grid, shading='auto', cmap='hot', norm="log")
-        fig.colorbar(heatmap, ax=ax, label='Loss')
+        fig, ax = plt.subplots(figsize=(8, 7))
+        heatmap = ax.pcolormesh(
+            X_grid, Y_grid, Z_grid, shading="auto", cmap="hot", norm="log"
+        )
+        fig.colorbar(heatmap, ax=ax, label="Loss")
 
         # Scatter objects for the swarm and the global best
-        scat_particles = ax.scatter([], [], color='blue', s=10, label='Particles')
-        scat_gbest = ax.scatter([], [], color='red', s=120, marker='*', label='Global Best')
+        scat_particles = ax.scatter([], [], color="blue", s=10, label="Particles")
+        scat_gbest = ax.scatter(
+            [], [], color="red", s=120, marker="*", label="Global Best"
+        )
 
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
@@ -238,8 +266,8 @@ class PSO:
         ax.legend()
 
         def init():
-            scat_particles.set_offsets(np.empty((0,2)))
-            scat_gbest.set_offsets(np.empty((0,2)))
+            scat_particles.set_offsets(np.empty((0, 2)))
+            scat_gbest.set_offsets(np.empty((0, 2)))
             return scat_particles, scat_gbest
 
         def update(frame):
@@ -251,22 +279,25 @@ class PSO:
             scat_particles.set_offsets(positions)
             scat_gbest.set_offsets([gbest_pos])
 
-            ax.set_title(f"Iteration {frame+1}/{self.n_iterations}")
+            ax.set_title(f"Iteration {frame + 1}/{self.n_iterations}")
             return scat_particles, scat_gbest
 
         n_frames = len(self.history_positions)
-        anim = FuncAnimation(fig, update, frames=n_frames, init_func=init,
-                             blit=True, interval=200)
+        anim = FuncAnimation(
+            fig, update, frames=n_frames, init_func=init, blit=True, interval=200
+        )
 
         writer = PillowWriter(fps=fps)
         anim.save(gif_filename, writer=writer)
         plt.close(fig)
         print(f"Animation saved to {gif_filename}")
 
-    def visualize_snapshot_2d(self, iteration=None, xlim=(-5,5), ylim=(-5,5), resolution=100):
+    def visualize_snapshot_2d(
+        self, iteration=None, xlim=(-5, 5), ylim=(-5, 5), resolution=100
+    ):
         """
         Plots a snapshot of the particles and the global best at a given iteration
-        overlaid with a heatmap of the loss function. If iteration is None, 
+        overlaid with a heatmap of the loss function. If iteration is None,
         uses the last iteration. This is only for dim=2.
         """
         if self.dim != 2:
@@ -285,24 +316,34 @@ class PSO:
             for j in range(resolution):
                 Z_grid[i, j] = self.loss_func([X_grid[i, j], Y_grid[i, j]])
 
-        fig, ax = plt.subplots(figsize=(8,7))
-        heatmap = ax.pcolormesh(X_grid, Y_grid, Z_grid, shading='auto', cmap='hot', norm="log")
-        fig.colorbar(heatmap, ax=ax, label='Loss')
+        fig, ax = plt.subplots(figsize=(8, 7))
+        heatmap = ax.pcolormesh(
+            X_grid, Y_grid, Z_grid, shading="auto", cmap="hot", norm="log"
+        )
+        fig.colorbar(heatmap, ax=ax, label="Loss")
 
         positions = self.history_positions[iteration]
         losses = self.history_losses[iteration]
         gbest_pos = self.history_best_position[iteration]
 
         # Plot the particles
-        ax.scatter(positions[:,0], positions[:,1], color='blue', s=10, label='Particles')
+        ax.scatter(
+            positions[:, 0], positions[:, 1], color="blue", s=10, label="Particles"
+        )
         # Plot global best
-        ax.scatter(gbest_pos[0], gbest_pos[1], color='red', s=120, marker='*', label='Global Best')
+        ax.scatter(
+            gbest_pos[0],
+            gbest_pos[1],
+            color="red",
+            s=120,
+            marker="*",
+            label="Global Best",
+        )
 
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
         ax.set_xlabel("x")
         ax.set_ylabel("y")
-        ax.set_title(f"Snapshot at Iteration {iteration+1}/{self.n_iterations}")
+        ax.set_title(f"Snapshot at Iteration {iteration + 1}/{self.n_iterations}")
         ax.legend()
         plt.show()
-

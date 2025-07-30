@@ -3,10 +3,24 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 import sys
 import os
+
 # Append the utils directory to the system path for importing PlotDefaults.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "utils")))
 from PlotDefaults import PlotDefaults
-from LossFunctions import rosenbrock_nd, beale_2d, keane_bump_nd, shekel_nd, rastrigin_nd, goldstein_price, ackley_nd, griewank_nd, sphere_nd, zakharov_nd, ellipsoid_nd
+from LossFunctions import (
+    rosenbrock_nd,
+    beale_2d,
+    keane_bump_nd,
+    shekel_nd,
+    rastrigin_nd,
+    goldstein_price,
+    ackley_nd,
+    griewank_nd,
+    sphere_nd,
+    zakharov_nd,
+    ellipsoid_nd,
+)
+
 
 # =============================================================================
 # Bee and Pheromone Classes
@@ -15,21 +29,25 @@ class Bee:
     """
     Stores a single bee's position, velocity, and loss.
     """
-    def __init__(self, position, velocity, loss = None):
+
+    def __init__(self, position, velocity, loss=None):
         self.position = np.array(position, dtype=float)
         self.velocity = np.array(velocity, dtype=float)
-        self.loss = loss       # L(t)
+        self.loss = loss  # L(t)
         self.prev_loss = None  # L(t-1)
         self.c = np.random.normal(0.9, 0.1)
         self.q = np.random.normal(0.4, 0.1)
+
 
 class Pheromone:
     """
     Stores the position and strength of a pheromone.
     """
+
     def __init__(self, position, strength):
         self.position = np.array(position, dtype=float)
         self.strength = strength
+
 
 # =============================================================================
 # Deterministic Beehive Optimization Class (with constraints)
@@ -52,7 +70,7 @@ class BeehiveOptimization:
         lower_bounds=None,  # Lower bound(s) for constrained optimization
         upper_bounds=None,  # Upper bound(s) for constrained optimization
         initial_guess=[],
-        seed = None,
+        seed=None,
     ):
         """
         Parameters:
@@ -133,11 +151,9 @@ class BeehiveOptimization:
                 pos = self.lower_bounds + pos * (self.upper_bounds - self.lower_bounds)
             else:
                 pos = np.random.uniform(-1, 1, dim)  # random in [0,1]
-                pos = np.array(initial_guess) + (
-                    +pos * (self.upper_bounds) * 0.10
-                )
+                pos = np.array(initial_guess) + (+pos * (self.upper_bounds) * 0.10)
                 pos = np.maximum(pos, self.lower_bounds)
-                pos = np.minimum(pos, pos) 
+                pos = np.minimum(pos, pos)
             vel = np.random.uniform(
                 -self.kappa, self.kappa, dim
             )  # Here we multiply by kappa to allow various starting speeds.
@@ -193,12 +209,14 @@ class BeehiveOptimization:
             # 2) update each bee
             k = 0.7
             for bee in self.bees:
-                #fluctuating temperature?
-                #decreasing temp as func of time
-                #increase/decrease fluctations depending on state
-                self.c = np.random.normal(0.9-(k*(t+1)/self.n_iterations), 0.8/(t+1))
+                # fluctuating temperature?
+                # decreasing temp as func of time
+                # increase/decrease fluctations depending on state
+                self.c = np.random.normal(
+                    0.9 - (k * (t + 1) / self.n_iterations), 0.8 / (t + 1)
+                )
                 self.c = min(1.2, self.c)
-                self.q = np.random.normal(0.1, 0.4/(t+1))
+                self.q = np.random.normal(0.1, 0.4 / (t + 1))
                 self.q = max(0, self.q)
                 old_loss = bee.loss
 
@@ -240,20 +258,19 @@ class BeehiveOptimization:
 
                 # if improved, drop pheromone
                 # no, now all drop pheremone. If improves, attracts, otherwise, repels.
-#                strength = (bee.prev_loss - bee.loss)
-#                strength = min(np.abs(strength), self.queen.loss)*(strength > 0)
-#                strength = strength*(bee.loss > 0)/bee.loss
-#                self.pheromones.append(Pheromone(bee.position.copy(), strength))
+                #                strength = (bee.prev_loss - bee.loss)
+                #                strength = min(np.abs(strength), self.queen.loss)*(strength > 0)
+                #                strength = strength*(bee.loss > 0)/bee.loss
+                #                self.pheromones.append(Pheromone(bee.position.copy(), strength))
 
-                strength = (bee.prev_loss - bee.loss)
-                strength = strength/np.abs(bee.loss)*100
-                mag_strength = min(np.abs(strength), self.queen.loss)#*(strength > 0)
+                strength = bee.prev_loss - bee.loss
+                strength = strength / np.abs(bee.loss) * 100
+                mag_strength = min(np.abs(strength), self.queen.loss)  # *(strength > 0)
                 if strength > 0:
                     strength = mag_strength
                 else:
                     strength = -mag_strength
                 self.pheromones.append(Pheromone(bee.position.copy(), strength))
-
 
             # 3) Decay pheromones
             self.decay_pheromones()
@@ -293,7 +310,7 @@ class BeehiveOptimization:
                 short_vec = np.round(best_bee_position[:3], 4)
                 best_pos_str = f"{short_vec}..."
             msg = (
-                f"\rIteration {t+1}/{self.n_iterations} [{bar}] "
+                f"\rIteration {t + 1}/{self.n_iterations} [{bar}] "
                 f" Best Loss: {best_loss_global:.4f} "
                 f" Best Pos: {best_pos_str} "
             )
@@ -305,7 +322,9 @@ class BeehiveOptimization:
 
         return best_bee_position, best_loss_global
 
-    def compute_pheromone_influence(self, bee, pheromone_positions, pheromone_strengths):
+    def compute_pheromone_influence(
+        self, bee, pheromone_positions, pheromone_strengths
+    ):
         """
         Computes the aggregated pheromone influence on the given bee.
         Force from each pheromone p:
@@ -316,8 +335,8 @@ class BeehiveOptimization:
             return np.zeros(self.dim, dtype=float)
 
         vectors = pheromone_positions - bee.position
-        dist_sq = np.sum(np.abs(vectors)**3, axis = 1) + 1e-12
-        forces = pheromone_strengths/dist_sq
+        dist_sq = np.sum(np.abs(vectors) ** 3, axis=1) + 1e-12
+        forces = pheromone_strengths / dist_sq
         sum_forces = np.sum(forces)
         if sum_forces < 1e-12:
             return np.zeros(self.dim, dtype=float)
@@ -332,23 +351,29 @@ class BeehiveOptimization:
         Decays all pheromones by factor gamma. Remove those that become too weak.
         """
         new_list = []
-        convergence_factor = 1E-6
-        if self.queen.loss < convergence_factor*10:
-            min_strength = self.queen.loss/10
+        convergence_factor = 1e-6
+        if self.queen.loss < convergence_factor * 10:
+            min_strength = self.queen.loss / 10
         else:
-            min_strength = convergence_factor 
+            min_strength = convergence_factor
         for p in self.pheromones:
             p.strength *= self.gamma
-            #perhaps these pheromones should just be removed if they dont have a large force.
-            if p.strength > min_strength:#1E-5:#min_strength: #self.queen.loss/10:
+            # perhaps these pheromones should just be removed if they dont have a large force.
+            if p.strength > min_strength:  # 1E-5:#min_strength: #self.queen.loss/10:
                 new_list.append(p)
         self.pheromones = new_list
 
     # -------------------------------------------------------------------------
     # 2D Visualization Only
     # -------------------------------------------------------------------------
-    def animate_evolution_2d(self, gif_filename="beehive_evolution.gif",
-                             xlim=(-5,5), ylim=(-5,5), fps=5, resolution=100):
+    def animate_evolution_2d(
+        self,
+        gif_filename="beehive_evolution.gif",
+        xlim=(-5, 5),
+        ylim=(-5, 5),
+        fps=5,
+        resolution=100,
+    ):
         """
         If dim=2, creates an animated GIF of all iterations, showing:
           - Heatmap of the loss function
@@ -368,16 +393,18 @@ class BeehiveOptimization:
         Z_grid = np.zeros_like(X_grid)
         for i in range(resolution):
             for j in range(resolution):
-                Z_grid[i,j] = self.loss_func([X_grid[i,j], Y_grid[i,j]])
+                Z_grid[i, j] = self.loss_func([X_grid[i, j], Y_grid[i, j]])
 
-        fig, ax = plt.subplots(figsize=(8,7))
-        heatmap = ax.pcolormesh(X_grid, Y_grid, Z_grid, shading='auto', cmap='hot', norm = "log")
-        fig.colorbar(heatmap, ax=ax, label='Loss')
+        fig, ax = plt.subplots(figsize=(8, 7))
+        heatmap = ax.pcolormesh(
+            X_grid, Y_grid, Z_grid, shading="auto", cmap="hot", norm="log"
+        )
+        fig.colorbar(heatmap, ax=ax, label="Loss")
 
-        scat_phero = ax.scatter([], [], color='green', alpha=0.5, label='Pheromones')
-        scat_bees = ax.scatter([], [], color='blue', s = 10, label='Bees')
-        scat_queen = ax.scatter([], [], color='red', s=120, marker='*', label='Queen')
-        scat_wasp = ax.scatter([], [], color='black', s=120, marker='*', label='Wasp')
+        scat_phero = ax.scatter([], [], color="green", alpha=0.5, label="Pheromones")
+        scat_bees = ax.scatter([], [], color="blue", s=10, label="Bees")
+        scat_queen = ax.scatter([], [], color="red", s=120, marker="*", label="Queen")
+        scat_wasp = ax.scatter([], [], color="black", s=120, marker="*", label="Wasp")
 
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
@@ -387,10 +414,10 @@ class BeehiveOptimization:
         ax.legend()
 
         def init():
-            scat_bees.set_offsets(np.empty((0,2)))
-            scat_queen.set_offsets(np.empty((0,2)))
-            scat_phero.set_offsets(np.empty((0,2)))
-            scat_wasp.set_offsets(np.empty((0,2)))
+            scat_bees.set_offsets(np.empty((0, 2)))
+            scat_queen.set_offsets(np.empty((0, 2)))
+            scat_phero.set_offsets(np.empty((0, 2)))
+            scat_wasp.set_offsets(np.empty((0, 2)))
             return scat_bees, scat_queen, scat_phero, scat_wasp
 
         def update(frame):
@@ -414,28 +441,33 @@ class BeehiveOptimization:
                 scat_phero.set_offsets(p_positions)
                 scat_phero.set_sizes(sizes)
             else:
-                scat_phero.set_offsets(np.empty((0,2)))
+                scat_phero.set_offsets(np.empty((0, 2)))
 
-            ax.set_title(f"Iteration {frame+1}/{self.n_iterations}")
+            ax.set_title(f"Iteration {frame + 1}/{self.n_iterations}")
             return scat_bees, scat_queen, scat_phero, scat_wasp
 
         n_frames = len(self.history_positions)
-        anim = FuncAnimation(fig, update, frames=n_frames, init_func=init,
-                             blit=True, interval=200)
+        anim = FuncAnimation(
+            fig, update, frames=n_frames, init_func=init, blit=True, interval=200
+        )
 
         writer = PillowWriter(fps=fps)
         anim.save(gif_filename, writer=writer)
         plt.close(fig)
         print(f"Animation saved to {gif_filename}")
 
-    def visualize_snapshot_2d(self, iteration=None, xlim=(-5,5), ylim=(-5,5), resolution=100):
+    def visualize_snapshot_2d(
+        self, iteration=None, xlim=(-5, 5), ylim=(-5, 5), resolution=100
+    ):
         """
         Plots a snapshot of the bees, queen, and pheromones at a given iteration
         overlaid with a heatmap of the loss function. If iteration is None, uses
         the last iteration. This is only for dim=2.
         """
         if self.dim != 2:
-            print("visualize_snapshot_2d only works for dim=2. (dim={})".format(self.dim))
+            print(
+                "visualize_snapshot_2d only works for dim=2. (dim={})".format(self.dim)
+            )
             return
 
         if iteration is None:
@@ -447,11 +479,13 @@ class BeehiveOptimization:
         Z_grid = np.zeros_like(X_grid)
         for i in range(resolution):
             for j in range(resolution):
-                Z_grid[i,j] = self.loss_func([X_grid[i,j], Y_grid[i,j]])
+                Z_grid[i, j] = self.loss_func([X_grid[i, j], Y_grid[i, j]])
 
-        fig, ax = plt.subplots(figsize=(8,7))
-        heatmap = ax.pcolormesh(X_grid, Y_grid, Z_grid, shading='auto', cmap='hot', norm = "log")
-        fig.colorbar(heatmap, ax=ax, label='Loss')
+        fig, ax = plt.subplots(figsize=(8, 7))
+        heatmap = ax.pcolormesh(
+            X_grid, Y_grid, Z_grid, shading="auto", cmap="hot", norm="log"
+        )
+        fig.colorbar(heatmap, ax=ax, label="Loss")
 
         positions = self.history_positions[iteration]
         losses = self.history_losses[iteration]
@@ -463,15 +497,24 @@ class BeehiveOptimization:
             p_positions = np.array([ph.position for ph in current_pheromones])
             p_strengths = np.array([ph.strength for ph in current_pheromones])
             sizes = p_strengths * 20
-            ax.scatter(p_positions[:,0], p_positions[:,1], s=sizes, color='green', alpha=0.5, label='Pheromones')
+            ax.scatter(
+                p_positions[:, 0],
+                p_positions[:, 1],
+                s=sizes,
+                color="green",
+                alpha=0.5,
+                label="Pheromones",
+            )
 
-        ax.scatter(positions[:,0], positions[:,1], color='blue', s = 10, label='Bees')
-        ax.scatter(queen_pos[0], queen_pos[1], color='red', s=120, marker='*', label='Queen')
+        ax.scatter(positions[:, 0], positions[:, 1], color="blue", s=10, label="Bees")
+        ax.scatter(
+            queen_pos[0], queen_pos[1], color="red", s=120, marker="*", label="Queen"
+        )
 
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
         ax.set_xlabel("x")
         ax.set_ylabel("y")
-        ax.set_title(f"Snapshot at Iteration {iteration+1}/{self.n_iterations}")
+        ax.set_title(f"Snapshot at Iteration {iteration + 1}/{self.n_iterations}")
         ax.legend()
         plt.show()
