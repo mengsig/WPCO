@@ -335,6 +335,7 @@ def enhanced_randomized_worker_process(config, result_queue, epsilon_value, work
             episode_reward = 0
             episode_experiences = []
             total_coverage_improvement = 0
+            efficiency_scores = []  # Track efficiency scores
             
             # Store radii configuration for this episode
             radii_config = env.radii.copy()
@@ -367,6 +368,10 @@ def enhanced_randomized_worker_process(config, result_queue, epsilon_value, work
                 episode_reward += reward
                 total_coverage_improvement += info.get("coverage_improvement", 0)
                 
+                # Track efficiency
+                if "efficiency" in info:
+                    efficiency_scores.append(info["efficiency"])
+                
                 if done:
                     break
                 
@@ -391,7 +396,7 @@ def enhanced_randomized_worker_process(config, result_queue, epsilon_value, work
                     "map_std": env.original_map.std(),
                     "map_max": env.original_map.max()
                 },
-                "efficiency_score": np.mean([exp[4]["efficiency"] for exp in episode_experiences if isinstance(exp[4], dict) and "efficiency" in exp[4]]),
+                "efficiency_score": np.mean(efficiency_scores) if efficiency_scores else 0.0,
                 "touching_score": info.get("touching_bonus", 0),
             }
             
