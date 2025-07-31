@@ -435,6 +435,24 @@ class FixedThreadSafeReplayBuffer:
             return len([exp for exp in self.buffer if exp is not None])
 
 
+@dataclass
+class EnhancedRandomizedRadiiConfig:
+    """Configuration for enhanced randomized radii training."""
+    n_episodes: int = 100000
+    n_workers: int = 32
+    map_size: int = 128
+    batch_size: int = 256  # Increased from 128
+    buffer_size: int = 1000000  # Increased from 500000
+    gradient_accumulation_steps: int = 4  # Increased from 2
+    learning_rate: float = 5e-5  # Reduced from 1e-4
+    epsilon_start: float = 0.8  # Reduced from 1.0
+    epsilon_end: float = 0.05  # Increased from 0.01
+    epsilon_decay_episodes: int = 50000  # Increased from 40000
+    target_update_freq: int = 2000  # Increased from 1000
+    visualize_every: int = 2000
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 class EnhancedRandomizedRadiiTrainer:
     """Enhanced trainer with improvements."""
     
