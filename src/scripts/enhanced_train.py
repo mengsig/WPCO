@@ -229,7 +229,7 @@ class EnhancedDQNAgent(GuidedDQNAgent):
         states = [e[0] for e in batch]
         actions = [e[1] for e in batch]
         rewards = [e[2] for e in batch]
-        next_states = [e[3] for e in batch if e[3] is not None]
+        next_states = [e[3] for e in batch]  # Keep all next states (including None)
         dones = [e[4] for e in batch]
         
         # Scale rewards if configured
@@ -262,28 +262,38 @@ class EnhancedDQNAgent(GuidedDQNAgent):
         
         # Next Q values
         next_q_values = torch.zeros(len(batch)).to(self.device)
-        if next_states:
-            next_state_batch = self._prepare_state_batch(next_states)
-            non_final_mask = torch.tensor(
-                [i for i, d in enumerate(dones) if not d and i < len(next_states)], 
-                dtype=torch.long
-            ).to(self.device)
+        
+        # Find which states are not terminal and have valid next states
+        non_final_next_states = []
+        non_final_indices = []
+        for i, (next_state, done) in enumerate(zip(next_states, dones)):
+            if not done and next_state is not None:
+                non_final_next_states.append(next_state)
+                non_final_indices.append(i)
+        
+        if len(non_final_next_states) > 0:
+            # Prepare next state batch
+            next_state_batch = self._prepare_state_batch(non_final_next_states)
             
-            if len(non_final_mask) > 0:
-                with torch.no_grad():
-                    # Get next Q values
-                    next_q_batch = self.q_network(next_state_batch)
-                    if next_q_batch.dim() == 3:
-                        next_q_batch = next_q_batch.view(len(next_states), -1)
-                    
-                    # Double DQN: action selection from q_network, evaluation from target_network
-                    next_actions = next_q_batch.max(1)[1].unsqueeze(-1)
-                    
-                    target_q_batch = self.target_network(next_state_batch)
-                    if target_q_batch.dim() == 3:
-                        target_q_batch = target_q_batch.view(len(next_states), -1)
-                    
-                    next_q_values[non_final_mask] = target_q_batch.gather(1, next_actions).squeeze(-1)
+            with torch.no_grad():
+                # Get next Q values
+                next_q_batch = self.q_network(next_state_batch)
+                if next_q_batch.dim() == 3:
+                    next_q_batch = next_q_batch.view(len(non_final_next_states), -1)
+                
+                # Double DQN: action selection from q_network, evaluation from target_network
+                next_actions = next_q_batch.max(1)[1].unsqueeze(-1)
+                
+                target_q_batch = self.target_network(next_state_batch)
+                if target_q_batch.dim() == 3:
+                    target_q_batch = target_q_batch.view(len(non_final_next_states), -1)
+                
+                # Get Q values for next actions
+                next_q_selected = target_q_batch.gather(1, next_actions).squeeze(-1)
+                
+                # Assign to appropriate indices
+                for i, idx in enumerate(non_final_indices):
+                    next_q_values[idx] = next_q_selected[i]
         
         # Compute targets
         rewards_tensor = torch.FloatTensor(rewards).to(self.device)
