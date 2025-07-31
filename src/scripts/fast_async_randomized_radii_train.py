@@ -630,19 +630,21 @@ class FastAsyncRandomizedRadiiTrainer:
         try:
             state_batch, actions, rewards, next_states, dones = self._prepare_batch_tensors_optimized(batch)
             
-            # Debug: Check tensor shapes
-            if hasattr(self, '_debug_shapes') and not self._debug_shapes:
-                print(f"Debug - Batch shapes:")
-                print(f"  current_map: {state_batch['current_map'].shape}")
-                print(f"  placed_mask: {state_batch['placed_mask'].shape}")
-                print(f"  value_density: {state_batch['value_density'].shape}")
-                print(f"  features: {state_batch['features'].shape}")
-                self._debug_shapes = True
-            
             # Forward pass
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
                     current_q_values = self.agent.q_network(state_batch)
+                    
+                    # Debug: Check tensor shapes
+                    if hasattr(self, '_debug_shapes') and not self._debug_shapes:
+                        print(f"Debug - Batch shapes:")
+                        print(f"  current_map: {state_batch['current_map'].shape}")
+                        print(f"  placed_mask: {state_batch['placed_mask'].shape}")
+                        print(f"  value_density: {state_batch['value_density'].shape}")
+                        print(f"  features: {state_batch['features'].shape}")
+                        print(f"  q_values shape: {current_q_values.shape}")
+                        print(f"  action_indices length: {len(action_indices)}")
+                        self._debug_shapes = True
                     
                     # Convert actions to tensor indices
                     action_indices = []
@@ -655,6 +657,9 @@ class FastAsyncRandomizedRadiiTrainer:
                         action_indices.append(idx)
                     
                     action_indices = torch.LongTensor(action_indices).to(self.device)
+                    # Fix dimension mismatch: ensure action_indices has correct shape
+                    if current_q_values.dim() == 3:  # Shape: [batch, height, width]
+                        current_q_values = current_q_values.view(current_q_values.size(0), -1)  # Flatten to [batch, height*width]
                     current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
                     
                     # Calculate target Q-values
@@ -671,6 +676,16 @@ class FastAsyncRandomizedRadiiTrainer:
                 # CPU training
                 current_q_values = self.agent.q_network(state_batch)
                 
+                # Debug: Check tensor shapes
+                if hasattr(self, '_debug_shapes') and not self._debug_shapes:
+                    print(f"Debug - Batch shapes (CPU):")
+                    print(f"  current_map: {state_batch['current_map'].shape}")
+                    print(f"  placed_mask: {state_batch['placed_mask'].shape}")
+                    print(f"  value_density: {state_batch['value_density'].shape}")
+                    print(f"  features: {state_batch['features'].shape}")
+                    print(f"  q_values shape: {current_q_values.shape}")
+                    self._debug_shapes = True
+                
                 action_indices = []
                 for action in actions:
                     if isinstance(action, (list, tuple)) and len(action) == 2:
@@ -681,6 +696,9 @@ class FastAsyncRandomizedRadiiTrainer:
                     action_indices.append(idx)
                 
                 action_indices = torch.LongTensor(action_indices).to(self.device)
+                # Fix dimension mismatch: ensure action_indices has correct shape
+                if current_q_values.dim() == 3:  # Shape: [batch, height, width]
+                    current_q_values = current_q_values.view(current_q_values.size(0), -1)  # Flatten to [batch, height*width]
                 current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
                 
                 target_q_values = torch.FloatTensor(rewards).to(self.device)
@@ -741,10 +759,21 @@ class FastAsyncRandomizedRadiiTrainer:
                 q_values = self.agent.q_network(state_batch).squeeze(0)
                 
                 if valid_mask is not None:
-                    mask_tensor = torch.FloatTensor(valid_mask.flatten()).to(self.device)
-                    q_values = q_values + (mask_tensor - 1) * 1e10
+                    # Fix mask application: ensure shapes match
+                    if q_values.dim() == 2:  # Shape: [height, width]
+                        mask_tensor = torch.FloatTensor(valid_mask).to(self.device)
+                    else:  # Flattened
+                        mask_tensor = torch.FloatTensor(valid_mask.flatten()).to(self.device)
+                    
+                    # Apply mask
+                    q_values_flat = q_values.view(-1)
+                    mask_flat = mask_tensor.view(-1)
+                    q_values_flat = q_values_flat + (mask_flat - 1) * 1e10
+                    
+                    action_idx = q_values_flat.argmax().item()
+                else:
+                    action_idx = q_values.view(-1).argmax().item()
                 
-                action_idx = q_values.view(-1).argmax().item()
                 action = (action_idx // self.config.map_size, action_idx % self.config.map_size)
             
             # Take step
@@ -882,13 +911,13 @@ class FastAsyncRandomizedRadiiTrainer:
                     "Epsilon": f"{current_epsilon:.3f}"
                 })
             
-            # Quick visualization (disabled initially to avoid shape errors)
-            if current_episodes > 0 and current_episodes > 2000:  # Only after some training
-                self._quick_visualize(current_episodes)
+            # Quick visualization (temporarily disabled for debugging)
+            # if current_episodes > 0 and current_episodes > 2000:  # Only after some training
+            #     self._quick_visualize(current_episodes)
             
-            # Periodic evaluation
-            if current_episodes > 0 and current_episodes % self.config.visualize_every == 0:
-                self._evaluate_and_visualize(current_episodes)
+            # Periodic evaluation (temporarily disabled for debugging)
+            # if current_episodes > 0 and current_episodes % self.config.visualize_every == 0:
+            #     self._evaluate_and_visualize(current_episodes)
             
             # Progress updates
             if current_episodes > 0 and current_episodes % 200 == 0:
