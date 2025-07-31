@@ -241,35 +241,49 @@ class EnhancedDQNAgent(GuidedDQNAgent):
         
         # Current Q values
         current_q_values = self.q_network(state_batch)
-        action_indices = torch.LongTensor(
-            [[a[0] * self.map_size + a[1]] for a in actions]
-        ).to(self.device)
-        current_q_values = (
-            current_q_values.view(self.batch_size, -1)
-            .gather(1, action_indices)
-            .squeeze()
-        )
+        
+        # Ensure actions are within bounds and create indices
+        action_indices = []
+        for a in actions:
+            x, y = int(a[0]), int(a[1])
+            # Clamp to valid range
+            x = max(0, min(x, self.map_size - 1))
+            y = max(0, min(y, self.map_size - 1))
+            idx = x * self.map_size + y
+            action_indices.append([idx])
+        
+        action_indices = torch.LongTensor(action_indices).to(self.device)
+        
+        # Get Q values for taken actions
+        if current_q_values.dim() == 3:
+            current_q_values = current_q_values.view(len(batch), -1)
+        
+        current_q_values = current_q_values.gather(1, action_indices).squeeze(-1)
         
         # Next Q values
-        next_q_values = torch.zeros(self.batch_size).to(self.device)
+        next_q_values = torch.zeros(len(batch)).to(self.device)
         if next_states:
             next_state_batch = self._prepare_state_batch(next_states)
-            non_final_mask = torch.tensor([not d for d in dones], dtype=torch.bool).to(
-                self.device
-            )
-            with torch.no_grad():
-                # Double DQN
-                next_actions = (
-                    self.q_network(next_state_batch)
-                    .view(len(next_states), -1)
-                    .max(1)[1]
-                )
-                next_q_values[non_final_mask] = (
-                    self.target_network(next_state_batch)
-                    .view(len(next_states), -1)
-                    .gather(1, next_actions.unsqueeze(1))
-                    .squeeze()
-                )
+            non_final_mask = torch.tensor(
+                [i for i, d in enumerate(dones) if not d and i < len(next_states)], 
+                dtype=torch.long
+            ).to(self.device)
+            
+            if len(non_final_mask) > 0:
+                with torch.no_grad():
+                    # Get next Q values
+                    next_q_batch = self.q_network(next_state_batch)
+                    if next_q_batch.dim() == 3:
+                        next_q_batch = next_q_batch.view(len(next_states), -1)
+                    
+                    # Double DQN: action selection from q_network, evaluation from target_network
+                    next_actions = next_q_batch.max(1)[1].unsqueeze(-1)
+                    
+                    target_q_batch = self.target_network(next_state_batch)
+                    if target_q_batch.dim() == 3:
+                        target_q_batch = target_q_batch.view(len(next_states), -1)
+                    
+                    next_q_values[non_final_mask] = target_q_batch.gather(1, next_actions).squeeze(-1)
         
         # Compute targets
         rewards_tensor = torch.FloatTensor(rewards).to(self.device)
@@ -283,7 +297,7 @@ class EnhancedDQNAgent(GuidedDQNAgent):
             self.prioritizer.update_priorities(indices, td_errors)
         
         # Loss with gradient clipping
-        loss = nn.functional.smooth_l1_loss(current_q_values, targets)
+        loss = nn.functional.smooth_l1_loss(current_q_values, targets.detach())
         
         # Optimize
         self.optimizer.zero_grad()
@@ -301,7 +315,7 @@ class EnhancedDQNAgent(GuidedDQNAgent):
         return loss.item()
 
 
-def train_enhanced_agent(episodes=100000):
+def train_enhanced_agent(episodes=100000, debug=False):
     """Train agent with all enhancements."""
     print("=" * 80)
     print("ENHANCED TRAINING TO BREAK COVERAGE PLATEAU")
@@ -321,6 +335,11 @@ def train_enhanced_agent(episodes=100000):
     )
     
     agent = EnhancedDQNAgent(map_size=128, config=config)
+    
+    if debug:
+        print(f"Environment map size: {env.map_size}")
+        print(f"Agent map size: {agent.map_size}")
+        print(f"Initial radii: {env.radii}")
     
     # Curriculum learning
     if config['use_curriculum']:
