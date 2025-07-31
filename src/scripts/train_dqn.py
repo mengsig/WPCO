@@ -13,6 +13,7 @@ from src.algorithms.dqn_agent import (
 )
 from src.utils.plotting_utils import plot_heatmap_with_circles
 import time
+from src.utils.periodic_tracker import RobustPeriodicChecker
 
 
 def visualize_strategy(env, agent, episode, save_path="advanced_strategy.png"):
@@ -120,16 +121,20 @@ def train_advanced_agent(n_episodes=2000, visualize_every=200):
 
     # Create environment and agent
     MAP_SIZE = 128
-    env = AdvancedCirclePlacementEnv(map_size=MAP_SIZE)
+    env = AdvancedCirclePlacementEnv(MAP_SIZE)
     agent = GuidedDQNAgent(
         map_size=MAP_SIZE,
         learning_rate=1e-4,
-        epsilon_start=1,  # Lower initial epsilon due to guided exploration
-        epsilon_decay_steps=int(n_episodes),
-        batch_size=16,
+        epsilon_start=0.5,
+        epsilon_end=0.01,
+        epsilon_decay_steps=2000,
+        batch_size=32,
         use_suggestions=True,
-        suggestion_prob=0.3,  # 30% of random actions use heuristics
+        suggestion_prob=0.3,
     )
+    
+    # Initialize robust periodic checker for visualization
+    viz_checker = RobustPeriodicChecker(visualize_every)
 
     # Training metrics
     episode_rewards = []
@@ -200,7 +205,7 @@ def train_advanced_agent(n_episodes=2000, visualize_every=200):
         )
 
         # Periodic evaluation and visualization
-        if (episode + 1) % visualize_every == 0:
+        if viz_checker.should_execute(episode + 1):
             print(f"\n{'=' * 60}")
             print(f"Episode {episode + 1}/{n_episodes}")
             print(f"{'=' * 60}")

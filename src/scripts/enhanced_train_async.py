@@ -1,0 +1,658 @@
+#!/usr/bin/env python3
+"""Asynchronous enhanced training script with multiple workers."""
+
+import sys
+import os
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+from collections import deque
+import random
+import multiprocessing as mp
+import threading
+import time
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Tuple
+import gc
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+
+from src.algorithms.dqn_agent import (
+    AdvancedCirclePlacementEnv,
+    GuidedDQNAgent,
+    random_seeder,
+    compute_included,
+)
+from src.algorithms.advanced_enhancements import (
+    AdvancedFeatureExtractor,
+    ImprovedCirclePlacementNet,
+    CurriculumLearningScheduler,
+    ExperiencePrioritization,
+    create_enhanced_training_config,
+)
+from src.utils.periodic_tracker import RobustPeriodicChecker
+from src.scripts.enhanced_train import EnhancedCirclePlacementEnv, EnhancedDQNAgent
+
+
+@dataclass
+class EnhancedExperience:
+    """Enhanced experience with additional metadata."""
+    state: Dict
+    action: Tuple[int, int]
+    reward: float
+    next_state: Optional[Dict]
+    done: bool
+    coverage: float
+    coverage_improvement: float
+    td_error: float = 0.0
+    worker_id: int = 0
+
+
+class ThreadSafeEnhancedReplayBuffer:
+    """Thread-safe replay buffer for enhanced experiences."""
+    
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.buffer = deque(maxlen=capacity)
+        self.lock = threading.Lock()
+        self.prioritizer = ExperiencePrioritization()
+    
+    def push(self, experience: EnhancedExperience):
+        """Add experience to buffer."""
+        with self.lock:
+            self.buffer.append(experience)
+            # Add to prioritizer
+            self.prioritizer.add_experience(
+                experience.td_error, 
+                experience.coverage_improvement
+            )
+    
+    def sample(self, batch_size: int) -> List[EnhancedExperience]:
+        """Sample batch of experiences."""
+        with self.lock:
+            if len(self.buffer) < batch_size:
+                return list(self.buffer)
+            
+            # Use prioritized sampling
+            indices = self.prioritizer.sample_indices(batch_size, len(self.buffer))
+            return [self.buffer[i] for i in indices]
+    
+    def update_priorities(self, indices: List[int], td_errors: List[float]):
+        """Update priorities for sampled experiences."""
+        with self.lock:
+            self.prioritizer.update_priorities(indices, td_errors)
+    
+    def __len__(self):
+        with self.lock:
+            return len(self.buffer)
+
+
+def enhanced_worker_process(
+    config: Dict,
+    result_queue: mp.Queue,
+    model_queue: mp.Queue,
+    epsilon_value: mp.Value,
+    worker_id: int,
+    curriculum_difficulty: mp.Value
+):
+    """Worker process for collecting enhanced experiences."""
+    print(f"Worker {worker_id} starting...")
+    
+    # Create environment with advanced features
+    env = EnhancedCirclePlacementEnv(
+        map_size=config['map_size'],
+        use_advanced_features=config['use_advanced_features']
+    )
+    
+    # Create local agent (will sync weights periodically)
+    local_agent = EnhancedDQNAgent(map_size=config['map_size'], config=config)
+    local_agent.epsilon = epsilon_value.value
+    
+    episodes_processed = 0
+    last_model_update = time.time()
+    
+    while True:
+        try:
+            # Update model weights periodically
+            if time.time() - last_model_update > 10:  # Every 10 seconds
+                try:
+                    if not model_queue.empty():
+                        model_weights = model_queue.get_nowait()
+                        local_agent.q_network.load_state_dict(model_weights)
+                        last_model_update = time.time()
+                except:
+                    pass
+            
+            # Adjust difficulty based on curriculum
+            if config.get('use_curriculum', False):
+                difficulty = curriculum_difficulty.value
+                base_radii = [20, 17, 14, 12, 12, 8, 7, 6, 5, 4, 3, 2, 1]
+                n_circles = int(len(base_radii) * difficulty)
+                n_circles = max(3, n_circles)
+                env.radii = base_radii[:n_circles]
+            
+            # Generate random map
+            weighted_matrix = random_seeder(config['map_size'], time_steps=100000)
+            state = env.reset(weighted_matrix)
+            
+            episode_experiences = []
+            episode_reward = 0
+            previous_coverage = 0
+            
+            # Update epsilon
+            local_agent.epsilon = epsilon_value.value
+            
+            while state is not None:
+                # Choose action with enhanced suggestions
+                if hasattr(env, 'get_placement_suggestions'):
+                    action = local_agent.act_with_suggestions(state, env)
+                else:
+                    action = local_agent.act(state, env)
+                
+                # Take step
+                next_state, reward, done, info = env.step(action)
+                
+                # Calculate coverage improvement
+                coverage_improvement = info['coverage'] - previous_coverage
+                
+                # Add coverage improvement bonus
+                if coverage_improvement > 0:
+                    reward += config.get('coverage_bonus_weight', 0.5) * coverage_improvement
+                
+                # Add exploration bonus
+                if len(env.placed_circles) > 3:
+                    reward += config.get('exploration_bonus', 0.1) * np.random.random() * local_agent.epsilon
+                
+                # Create enhanced experience
+                experience = EnhancedExperience(
+                    state=state,
+                    action=action,
+                    reward=reward * config.get('reward_scaling', 1.0),
+                    next_state=next_state,
+                    done=done,
+                    coverage=info['coverage'],
+                    coverage_improvement=coverage_improvement,
+                    worker_id=worker_id
+                )
+                
+                episode_experiences.append(experience)
+                episode_reward += reward
+                previous_coverage = info['coverage']
+                state = next_state
+                
+                if done:
+                    break
+            
+            # Send episode results
+            result = {
+                'experiences': episode_experiences,
+                'episode_reward': episode_reward,
+                'coverage': info['coverage'],
+                'n_circles': len(env.placed_circles),
+                'worker_id': worker_id,
+                'radii_config': env.radii
+            }
+            
+            result_queue.put(result)
+            episodes_processed += 1
+            
+            if episodes_processed % 100 == 0:
+                print(f"Worker {worker_id}: {episodes_processed} episodes processed")
+                
+        except Exception as e:
+            print(f"Worker {worker_id} error: {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(1)
+
+
+class AsyncEnhancedTrainer:
+    """Asynchronous trainer with enhanced features."""
+    
+    def __init__(self, config: Dict):
+        self.config = config
+        self.device = torch.device(config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
+        
+        # Initialize enhanced agent
+        self.agent = EnhancedDQNAgent(
+            map_size=config['map_size'],
+            config=config
+        )
+        
+        # Replay buffer
+        self.replay_buffer = ThreadSafeEnhancedReplayBuffer(config['buffer_size'])
+        
+        # Shared values
+        self.epsilon_value = mp.Value('f', config['epsilon_start'])
+        self.curriculum_difficulty = mp.Value('f', 0.3)
+        
+        # Queues
+        self.result_queue = mp.Queue(maxsize=config['n_workers'] * 2)
+        self.model_queue = mp.Queue(maxsize=config['n_workers'])
+        
+        # Curriculum learning
+        if config.get('use_curriculum', False):
+            self.curriculum = CurriculumLearningScheduler(
+                warmup_episodes=config.get('warmup_episodes', 10000)
+            )
+        else:
+            self.curriculum = None
+        
+        # Metrics
+        self.episode_rewards = []
+        self.episode_coverage = []
+        self.losses = []
+        self.training_step = 0
+        self.episodes_completed = 0
+        
+        # Calculate save frequencies based on total episodes
+        total_episodes = config.get('episodes', 100000)
+        n_model_saves = config.get('n_model_saves', 20)
+        n_image_saves = config.get('n_image_saves', 100)
+        
+        # Periodic checkers with calculated frequencies
+        model_save_freq = max(100, total_episodes // n_model_saves)
+        image_save_freq = max(100, total_episodes // n_image_saves)
+        eval_freq = max(100, total_episodes // 50)  # ~50 evaluations
+        
+        self.model_save_checker = RobustPeriodicChecker(model_save_freq)
+        self.image_save_checker = RobustPeriodicChecker(image_save_freq)
+        self.eval_checker = RobustPeriodicChecker(eval_freq)
+        self.model_broadcast_checker = RobustPeriodicChecker(100)  # Broadcast model every 100 episodes
+        
+        print(f"Save frequencies - Models: every {model_save_freq} episodes, Images: every {image_save_freq} episodes")
+        
+        # Create directories for organized saving
+        os.makedirs('checkpoints', exist_ok=True)
+        os.makedirs('visualizations', exist_ok=True)
+        
+        # Start workers
+        self.workers = []
+        for i in range(config['n_workers']):
+            worker = mp.Process(
+                target=enhanced_worker_process,
+                args=(
+                    config,
+                    self.result_queue,
+                    self.model_queue,
+                    self.epsilon_value,
+                    i,
+                    self.curriculum_difficulty
+                ),
+                daemon=True
+            )
+            worker.start()
+            self.workers.append(worker)
+        
+        # Start experience collection thread
+        self.collection_thread = threading.Thread(
+            target=self._collect_experiences,
+            daemon=True
+        )
+        self.collection_thread.start()
+    
+    def _collect_experiences(self):
+        """Collect experiences from workers."""
+        while True:
+            try:
+                result = self.result_queue.get(timeout=1)
+                
+                # Add experiences to replay buffer
+                for exp in result['experiences']:
+                    self.replay_buffer.push(exp)
+                
+                # Update metrics
+                self.episode_rewards.append(result['episode_reward'])
+                self.episode_coverage.append(result['coverage'])
+                self.episodes_completed += 1
+                
+                # Update curriculum
+                if self.curriculum:
+                    self.curriculum.step()
+                    self.curriculum_difficulty.value = self.curriculum.get_difficulty()
+                
+                # Update epsilon
+                self.epsilon_value.value = self.agent.epsilon_end + (
+                    self.agent.epsilon_start - self.agent.epsilon_end
+                ) * np.exp(-1.0 * self.episodes_completed / self.agent.epsilon_decay_steps)
+                
+                # Broadcast model periodically
+                if self.model_broadcast_checker.should_execute(self.episodes_completed):
+                    self._broadcast_model()
+                    
+            except:
+                continue
+    
+    def _broadcast_model(self):
+        """Broadcast current model to workers."""
+        model_state = self.agent.q_network.state_dict()
+        for _ in range(self.config['n_workers']):
+            try:
+                self.model_queue.put_nowait(model_state)
+            except:
+                pass
+    
+    def _training_step(self):
+        """Perform one training step."""
+        if len(self.replay_buffer) < self.config['batch_size']:
+            return None
+        
+        # Sample batch
+        batch_experiences = self.replay_buffer.sample(self.config['batch_size'])
+        
+        # Prepare batch tensors
+        states = [exp.state for exp in batch_experiences]
+        actions = [exp.action for exp in batch_experiences]
+        rewards = [exp.reward for exp in batch_experiences]
+        next_states = [exp.next_state for exp in batch_experiences]
+        dones = [exp.done for exp in batch_experiences]
+        
+        # Convert states to tensors
+        current_maps = torch.FloatTensor(
+            np.array([s["current_map"] for s in states])
+        ).to(self.device)
+        
+        placed_masks = torch.FloatTensor(
+            np.array([s["placed_mask"] for s in states])
+        ).to(self.device)
+        
+        value_densities = torch.FloatTensor(
+            np.array([s["value_density"] for s in states])
+        ).to(self.device)
+        
+        features = torch.FloatTensor(
+            np.array([s["features"] for s in states])
+        ).to(self.device)
+        
+        state_batch = {
+            "current_map": current_maps,
+            "placed_mask": placed_masks,
+            "value_density": value_densities,
+            "features": features,
+        }
+        
+        # Get current Q values
+        current_q_values = self.agent.q_network(state_batch)
+        
+        # Convert actions to indices
+        action_indices = []
+        for a in actions:
+            x, y = int(a[0]), int(a[1])
+            # Clamp to valid range
+            x = max(0, min(x, self.agent.map_size - 1))
+            y = max(0, min(y, self.agent.map_size - 1))
+            idx = x * self.agent.map_size + y
+            action_indices.append(idx)
+        
+        action_indices = torch.LongTensor(action_indices).to(self.device)
+        
+        # Flatten Q values if needed
+        if current_q_values.dim() == 3:
+            current_q_values = current_q_values.view(len(states), -1)
+        
+        # Get Q values for taken actions
+        current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+        
+        # Calculate target Q values
+        with torch.no_grad():
+            # Initialize target values with rewards
+            target_q_values = torch.FloatTensor(rewards).to(self.device)
+            
+            # Add future rewards for non-terminal states
+            non_final_mask = []
+            non_final_next_states = []
+            
+            for i, (next_state, done) in enumerate(zip(next_states, dones)):
+                if not done and next_state is not None:
+                    non_final_mask.append(i)
+                    non_final_next_states.append(next_state)
+            
+            if non_final_next_states:
+                # Prepare next state batch
+                next_current_maps = torch.FloatTensor(
+                    np.array([s["current_map"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_placed_masks = torch.FloatTensor(
+                    np.array([s["placed_mask"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_value_densities = torch.FloatTensor(
+                    np.array([s["value_density"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_features = torch.FloatTensor(
+                    np.array([s["features"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_state_batch = {
+                    "current_map": next_current_maps,
+                    "placed_mask": next_placed_masks,
+                    "value_density": next_value_densities,
+                    "features": next_features,
+                }
+                
+                # Double DQN
+                next_q_values = self.agent.q_network(next_state_batch)
+                if next_q_values.dim() == 3:
+                    next_q_values = next_q_values.view(len(non_final_next_states), -1)
+                
+                next_actions = next_q_values.max(1)[1]
+                
+                next_q_values_target = self.agent.target_network(next_state_batch)
+                if next_q_values_target.dim() == 3:
+                    next_q_values_target = next_q_values_target.view(len(non_final_next_states), -1)
+                
+                next_q_selected = next_q_values_target.gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                
+                # Update target values for non-final states
+                for i, idx in enumerate(non_final_mask):
+                    target_q_values[idx] += self.agent.gamma * next_q_selected[i]
+        
+        # Calculate loss
+        loss = nn.functional.smooth_l1_loss(current_q_values, target_q_values)
+        
+        # Optimize
+        self.agent.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        grad_clip = self.config.get('gradient_clip', 1.0)
+        torch.nn.utils.clip_grad_norm_(self.agent.q_network.parameters(), grad_clip)
+        
+        self.agent.optimizer.step()
+        
+        # Soft update target network
+        self.agent.soft_update_target_network()
+        
+        # Update training step counter
+        self.training_step += 1
+        
+        # Update target network periodically
+        if self.training_step % self.config.get('target_update_freq', 1000) == 0:
+            self.agent.update_target_network()
+        
+        # Store loss
+        loss_value = loss.item()
+        self.losses.append(loss_value)
+        
+        return loss_value
+    
+    def train(self, total_episodes: int):
+        """Main training loop."""
+        print("=" * 80)
+        print("ASYNCHRONOUS ENHANCED TRAINING")
+        print(f"Workers: {self.config['n_workers']}")
+        print(f"Device: {self.device}")
+        print("=" * 80)
+        
+        pbar = tqdm(total=total_episodes, desc="Training")
+        best_coverage = 0
+        
+        while self.episodes_completed < total_episodes:
+            # Perform training step
+            loss = self._training_step()
+            
+            # Update progress bar
+            if self.episodes_completed > 0:
+                recent_coverage = np.mean(self.episode_coverage[-100:])
+                recent_reward = np.mean(self.episode_rewards[-100:])
+                
+                # Update best coverage
+                if len(self.episode_coverage) > 0:
+                    current_best = max(self.episode_coverage[-100:])
+                    if current_best > best_coverage:
+                        best_coverage = current_best
+                
+                pbar.n = self.episodes_completed
+                pbar.set_postfix({
+                    'Coverage': f'{recent_coverage:.1%}',
+                    'Best': f'{best_coverage:.1%}',
+                    'Reward': f'{recent_reward:.1f}',
+                    'Buffer': f'{len(self.replay_buffer):,}',
+                    'Loss': f'{np.mean(self.losses[-100:]):.4f}' if self.losses else 'N/A',
+                    'Epsilon': f'{self.epsilon_value.value:.3f}'
+                })
+                pbar.refresh()
+            
+            # Periodic evaluation
+            if self.eval_checker.should_execute(self.episodes_completed):
+                print(f"\n[Episode {self.episodes_completed}] Coverage: {recent_coverage:.1%} (Best: {best_coverage:.1%})")
+                if self.curriculum:
+                    print(f"Curriculum difficulty: {self.curriculum_difficulty.value:.2f}")
+            
+            # Save checkpoint
+            if self.model_save_checker.should_execute(self.episodes_completed):
+                self._save_checkpoint(best_coverage)
+            
+            # Save visualization
+            if self.image_save_checker.should_execute(self.episodes_completed):
+                self._save_visualization(recent_coverage)
+            
+            time.sleep(0.001)  # Small delay to prevent CPU spinning
+        
+        pbar.close()
+        
+        # Cleanup
+        for worker in self.workers:
+            worker.terminate()
+        
+        print(f"\nTraining complete! Best coverage: {best_coverage:.1%}")
+        return self.agent, best_coverage
+    
+    def _save_checkpoint(self, best_coverage: float):
+        """Save training checkpoint."""
+        checkpoint = {
+            'episode': self.episodes_completed,
+            'model_state': self.agent.q_network.state_dict(),
+            'optimizer_state': self.agent.optimizer.state_dict(),
+            'best_coverage': best_coverage,
+            'config': self.config,
+            'episode_rewards': self.episode_rewards[-1000:],
+            'episode_coverage': self.episode_coverage[-1000:]
+        }
+        
+        filename = f'checkpoints/enhanced_async_ep{self.episodes_completed:06d}_cov{best_coverage:.0%}.pth'
+        torch.save(checkpoint, filename)
+        print(f"\n💾 Saved model checkpoint: {filename}")
+    
+    def _save_visualization(self, recent_coverage: float):
+        """Save visualization of training progress."""
+        try:
+            # Create figure with training metrics
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            
+            # Coverage over time
+            axes[0, 0].plot(self.episode_coverage)
+            axes[0, 0].axhline(y=0.37, color='r', linestyle='--', alpha=0.5, label='Previous plateau')
+            axes[0, 0].set_title('Coverage Over Episodes')
+            axes[0, 0].set_xlabel('Episode')
+            axes[0, 0].set_ylabel('Coverage')
+            axes[0, 0].legend()
+            axes[0, 0].grid(True, alpha=0.3)
+            
+            # Rewards over time
+            axes[0, 1].plot(self.episode_rewards)
+            axes[0, 1].set_title('Rewards Over Episodes')
+            axes[0, 1].set_xlabel('Episode')
+            axes[0, 1].set_ylabel('Episode Reward')
+            axes[0, 1].grid(True, alpha=0.3)
+            
+            # Loss over time
+            if self.losses:
+                axes[1, 0].plot(self.losses)
+                axes[1, 0].set_title('Training Loss')
+                axes[1, 0].set_xlabel('Training Step')
+                axes[1, 0].set_ylabel('Loss')
+                axes[1, 0].set_yscale('log')
+                axes[1, 0].grid(True, alpha=0.3)
+            
+            # Coverage distribution
+            if len(self.episode_coverage) > 100:
+                axes[1, 1].hist(self.episode_coverage[-1000:], bins=50, alpha=0.7)
+                axes[1, 1].axvline(x=recent_coverage, color='r', linestyle='--', label=f'Recent: {recent_coverage:.1%}')
+                axes[1, 1].set_title('Coverage Distribution (Last 1000 Episodes)')
+                axes[1, 1].set_xlabel('Coverage')
+                axes[1, 1].set_ylabel('Count')
+                axes[1, 1].legend()
+                axes[1, 1].grid(True, alpha=0.3)
+            
+            plt.suptitle(f'Enhanced Async Training Progress - Episode {self.episodes_completed}')
+            plt.tight_layout()
+            
+            filename = f'visualizations/progress_ep{self.episodes_completed:06d}.png'
+            plt.savefig(filename, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            print(f"\n📊 Saved visualization: {filename}")
+            
+        except Exception as e:
+            print(f"Error saving visualization: {e}")
+
+
+def create_async_config():
+    """Create configuration for asynchronous enhanced training."""
+    base_config = create_enhanced_training_config()
+    
+    # Add async-specific settings
+    async_config = {
+        **base_config,
+        'n_workers': mp.cpu_count() - 1,  # Leave one CPU for main thread
+        'map_size': 128,
+        'episodes': 100000,
+        'buffer_size': 500000,  # Larger buffer for async
+        'batch_size': 128,  # Larger batch for efficiency
+        'n_model_saves': 20,  # Save 20 models over training
+        'n_image_saves': 100,  # Save 100 images over training
+    }
+    
+    return async_config
+
+
+if __name__ == "__main__":
+    # Set multiprocessing start method
+    mp.set_start_method('spawn', force=True)
+    
+    # Create configuration
+    config = create_async_config()
+    
+    # Override with command line arguments if needed
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--episodes', type=int, default=50000)
+    parser.add_argument('--workers', type=int, default=config['n_workers'])
+    args = parser.parse_args()
+    
+    config['episodes'] = args.episodes
+    config['n_workers'] = args.workers
+    
+    # Create trainer and run
+    trainer = AsyncEnhancedTrainer(config)
+    agent, best_coverage = trainer.train(config['episodes'])
+    
+    print(f"\nFinal best coverage: {best_coverage:.1%}")
