@@ -28,6 +28,7 @@ from src.algorithms.dqn_agent import (
     compute_included,
     HeatmapFeatureExtractor,
 )
+from src.utils.periodic_tracker import PeriodicTaskTracker, RobustPeriodicChecker
 
 
 class FixedRandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
@@ -427,6 +428,46 @@ class FixedRandomizedRadiiTrainer:
         self.map_diversity_stats = []
         self.worker_stats = {}
         
+        # Initialize periodic task trackers
+        self.periodic_tasks = PeriodicTaskTracker()
+        
+        # Register periodic tasks
+        self.periodic_tasks.register_task(
+            'target_update', 
+            self.config.target_update_freq,
+            lambda step: self.agent.update_target_network()
+        )
+        
+        self.periodic_tasks.register_task(
+            'progress_report',
+            200,  # Every 200 episodes
+            lambda step: self._print_progress_update(step)
+        )
+        
+        self.periodic_tasks.register_task(
+            'checkpoint_save',
+            500,  # Every 500 episodes
+            lambda step: self._save_checkpoint(step)
+        )
+        
+        self.periodic_tasks.register_task(
+            'visualization',
+            1000,  # Every 1000 episodes
+            lambda step: self._quick_visualize(step)
+        )
+        
+        self.periodic_tasks.register_task(
+            'cleanup',
+            500,  # Every 500 episodes
+            lambda step: self._cleanup_memory()
+        )
+        
+        # Alternative: Use individual checkers for more control
+        self.target_update_checker = RobustPeriodicChecker(self.config.target_update_freq)
+        self.save_checker = RobustPeriodicChecker(500)
+        self.viz_checker = RobustPeriodicChecker(1000)
+        self.progress_checker = RobustPeriodicChecker(200)
+        
         # Experience collection thread
         self.collection_thread = threading.Thread(target=self._collect_experiences, daemon=True)
         self.collection_thread.start()
@@ -562,8 +603,8 @@ class FixedRandomizedRadiiTrainer:
             
             self.training_step += 1
             
-            # Update target network
-            if self.training_step % self.config.target_update_freq == 0:
+            # Update target network using robust checker
+            if self.target_update_checker.should_execute(self.training_step):
                 self.agent.update_target_network()
             
             return loss.item()
@@ -571,6 +612,12 @@ class FixedRandomizedRadiiTrainer:
         except Exception as e:
             print(f"Training step error: {e}")
             return None
+    
+    def _cleanup_memory(self):
+        """Cleanup memory periodically."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     def train(self):
         """Main training loop with FIXED saving."""
@@ -638,26 +685,24 @@ class FixedRandomizedRadiiTrainer:
                     "Epsilon": f"{current_epsilon:.3f}"
                 })
             
-            # FIXED: More frequent progress updates and saving
-            if current_episodes > 0 and current_episodes % 200 == 0:
-                self._print_progress_update(current_episodes)
-                print(f"🔢 Episode count check: {current_episodes} episodes completed")
-            
-            # Periodic cleanup
-            if current_episodes % 500 == 0:
-                gc.collect()
-                torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            
-            # FIXED: Checkpoint saving every 500 episodes (very frequent)
-            if current_episodes > 0 and current_episodes % 500 == 0:
-                self._save_checkpoint(current_episodes)
-                print(f"📁 Checkpoint triggered at episode {current_episodes}")
-            
-            # ADDED: Visualization every 1000 episodes
-            if current_episodes > 0 and current_episodes > self.next_breakpoint == 0:
-                print(f"🎯 Major checkpoint at episode {current_episodes}")
-                self._quick_visualize(current_episodes)
-                self.next_breakpoint += 1000
+            # Use robust periodic checkers for all periodic tasks
+            if current_episodes > 0:
+                # Progress updates
+                if self.progress_checker.should_execute(current_episodes):
+                    self._print_progress_update(current_episodes)
+                    print(f"🔢 Episode count check: {current_episodes} episodes completed")
+                
+                # Checkpoint saving
+                if self.save_checker.should_execute(current_episodes):
+                    self._save_checkpoint(current_episodes)
+                    print(f"📁 Checkpoint triggered at episode {current_episodes}")
+                    # Also do cleanup when saving
+                    self._cleanup_memory()
+                
+                # Visualization
+                if self.viz_checker.should_execute(current_episodes):
+                    print(f"🎯 Major checkpoint at episode {current_episodes}")
+                    self._quick_visualize(current_episodes)
             
             time.sleep(0.01)
         
