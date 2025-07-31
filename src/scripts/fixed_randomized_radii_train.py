@@ -652,9 +652,10 @@ class FixedRandomizedRadiiTrainer:
                 self._save_checkpoint(current_episodes)
                 print(f"📁 Checkpoint triggered at episode {current_episodes}")
             
-            # Also save every 1000 episodes
+            # ADDED: Visualization every 1000 episodes
             if current_episodes > 0 and current_episodes % 1000 == 0:
                 print(f"🎯 Major checkpoint at episode {current_episodes}")
+                self._quick_visualize(current_episodes)
             
             time.sleep(0.01)
         
@@ -761,6 +762,146 @@ class FixedRandomizedRadiiTrainer:
             
         except Exception as e:
             print(f"   ❌ Error saving final model: {e}")
+    
+    def visualize_strategy(self, episode, save_path="fixed_randomized_strategy.png"):
+        """Visualize the fixed randomized radii agent's strategy."""
+        try:
+            # Use fixed randomized radii environment for testing
+            test_env = FixedRandomizedRadiiEnvironment(self.config.map_size)
+            weighted_matrix = random_seeder(self.config.map_size, time_steps=100000)
+            state = test_env.reset(weighted_matrix)
+            
+            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+            
+            # Original heatmap
+            axes[0, 0].imshow(test_env.original_map, cmap="hot")
+            axes[0, 0].set_title("Original Heatmap")
+            axes[0, 0].axis("off")
+            
+            # Track coverage improvements and configuration
+            coverage_history = [0.0]
+            radii_used = []
+            
+            # Show placements step by step
+            steps_to_show = [2, min(5, len(test_env.radii)-1), min(8, len(test_env.radii)-1)]
+            step_idx = 0
+            
+            for i in range(len(test_env.radii)):
+                current_radius = test_env.radii[i]
+                radii_used.append(current_radius)
+                
+                # Get valid actions mask
+                valid_mask = np.ones((self.config.map_size, self.config.map_size), dtype=bool)
+                valid_mask[:current_radius, :] = False
+                valid_mask[-current_radius:, :] = False
+                valid_mask[:, :current_radius] = False
+                valid_mask[:, -current_radius:] = False
+                
+                # Get agent's action using heuristic (since we're using heuristic agents)
+                heuristic_agent = SimpleHeuristicAgent(self.config.map_size)
+                state_with_radius = state.copy()
+                state_with_radius["current_radius"] = current_radius
+                action = heuristic_agent.act(state_with_radius, valid_mask.flatten(), epsilon=0.0)  # No randomness for visualization
+                
+                # Take step
+                state, reward, done, info = test_env.step(action)
+                coverage_history.append(info["coverage"])
+                
+                # Visualize at specific steps
+                if i + 1 in steps_to_show and step_idx < 3:
+                    positions = [(0, 1), (0, 2), (1, 1)]
+                    row, col = positions[step_idx]
+                    
+                    axes[row, col].imshow(test_env.original_map, cmap="hot", alpha=0.6)
+                    
+                    # Draw circles with different colors for different sizes
+                    for j, (x, y, r) in enumerate(test_env.placed_circles):
+                        # Color by size: red=large, blue=medium, green=small
+                        if r >= 15:
+                            color = 'red'
+                        elif r >= 8:
+                            color = 'blue'
+                        else:
+                            color = 'green'
+                        circle = plt.Circle((y, x), r, fill=False, color=color, linewidth=2)
+                        axes[row, col].add_patch(circle)
+                    
+                    coverage_improvement = coverage_history[-1] - coverage_history[-2] if len(coverage_history) > 1 else 0
+                    axes[row, col].set_title(f"Step {i + 1}: r={current_radius}, Cov {info['coverage']:.1%} (+{coverage_improvement:.1%})")
+                    axes[row, col].axis("off")
+                    
+                    step_idx += 1
+                
+                if done:
+                    break
+            
+            # Final result
+            axes[1, 0].imshow(test_env.original_map, cmap="hot", alpha=0.6)
+            for j, (x, y, r) in enumerate(test_env.placed_circles):
+                if r >= 15:
+                    color = 'red'
+                elif r >= 8:
+                    color = 'blue'
+                else:
+                    color = 'green'
+                circle = plt.Circle((y, x), r, fill=False, color=color, linewidth=2)
+                axes[1, 0].add_patch(circle)
+            
+            axes[1, 0].set_title(f"Final: {info['coverage']:.1%} coverage")
+            axes[1, 0].axis("off")
+            
+            # Coverage progress
+            axes[1, 1].plot(coverage_history, 'g-', linewidth=2, marker='o')
+            axes[1, 1].set_title("Coverage Progress")
+            axes[1, 1].set_xlabel("Circle Placement")
+            axes[1, 1].set_ylabel("Coverage")
+            axes[1, 1].grid(True)
+            
+            # Configuration info
+            config_text = f"Episode: {episode}\n"
+            config_text += f"Circles: {len(test_env.radii)}\n"
+            config_text += f"Radii: {test_env.radii}\n"
+            config_text += f"Achieved: {info['coverage']:.1%}\n"
+            config_text += f"Training Steps: {self.training_step:,}\n"
+            config_text += f"Buffer: {len(self.replay_buffer):,}\n"
+            
+            # Add recent performance stats
+            if len(self.episode_coverage) > 100:
+                recent_coverage = np.mean(self.episode_coverage[-100:])
+                recent_reward = np.mean(self.episode_rewards[-100:])
+                config_text += f"Recent Avg Coverage: {recent_coverage:.1%}\n"
+                config_text += f"Recent Avg Reward: {recent_reward:.1f}"
+            
+            axes[1, 2].text(0.05, 0.95, config_text, fontsize=10, transform=axes[1, 2].transAxes, 
+                           verticalalignment='top', fontfamily='monospace')
+            axes[1, 2].set_title("Configuration & Stats")
+            axes[1, 2].axis("off")
+            
+            # Add legend for circle colors
+            legend_text = "Circle Sizes:\n🔴 Large (≥15)\n🔵 Medium (8-14)\n🟢 Small (<8)"
+            axes[0, 1].text(0.02, 0.02, legend_text, fontsize=10, transform=axes[0, 1].transAxes,
+                           verticalalignment='bottom', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            plt.suptitle(f"Fixed Randomized Radii Agent - Episode {episode} ({len(test_env.radii)} circles)")
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+        except Exception as e:
+            print(f"❌ Visualization error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _quick_visualize(self, episode: int):
+        """Quick visualization every 1000 episodes."""
+        try:
+            save_path = f"fixed_randomized_strategy_ep{episode}.png"
+            self.visualize_strategy(episode, save_path)
+            print(f"📸 Visualization saved: {save_path}")
+        except Exception as e:
+            print(f"❌ Visualization error: {e}")
     
     def _cleanup(self):
         """Clean up resources."""
