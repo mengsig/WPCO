@@ -535,21 +535,479 @@ class EnhancedRandomizedRadiiTrainer:
         # Experience collection thread
         self.collection_thread = threading.Thread(target=self._collect_experiences, daemon=True)
         self.collection_thread.start()
+    
+    def _collect_experiences(self):
+        """Asynchronously collect experiences from workers."""
+        while True:
+            try:
+                result_data = self.result_queue.get(timeout=1.0)
+                
+                # Add experiences to buffer
+                for exp in result_data["experiences"]:
+                    self.replay_buffer.push(exp)
+                
+                # Record metrics
+                self.episode_rewards.append(result_data["episode_reward"])
+                self.episode_coverage.append(result_data["coverage"])
+                self.coverage_improvements.append(result_data["total_coverage_improvement"])
+                self.avg_coverage_improvements.append(result_data["avg_coverage_improvement"])
+                
+                # Enhanced metrics
+                self.efficiency_scores.append(result_data.get("efficiency_score", 0))
+                self.touching_scores.append(result_data.get("touching_score", 0))
+                
+                # Record randomized radii metrics
+                self.radii_configs.append(result_data["radii_config"])
+                self.n_circles_history.append(result_data["n_circles"])
+                
+                # Track map diversity
+                if "map_diversity_stats" in result_data:
+                    self.map_diversity_stats.append(result_data["map_diversity_stats"])
+                
+                # Update worker statistics
+                worker_id = result_data["worker_id"]
+                self.worker_stats[worker_id] = {
+                    "episodes_completed": result_data.get("episodes_completed", 0),
+                    "maps_generated": result_data.get("maps_generated", 0)
+                }
+                
+            except:
+                continue
+    
+    def _update_epsilon(self):
+        """Update shared epsilon value with smoother decay."""
+        current_episodes = len(self.episode_rewards)
+        
+        # Use exponential decay instead of linear
+        decay_rate = -np.log(self.config.epsilon_end / self.config.epsilon_start) / self.config.epsilon_decay_episodes
+        new_epsilon = self.config.epsilon_start * np.exp(-decay_rate * current_episodes)
+        new_epsilon = max(new_epsilon, self.config.epsilon_end)
+        
+        with self.epsilon_value.get_lock():
+            self.epsilon_value.value = new_epsilon
+            self.agent.epsilon = new_epsilon
+    
+    def _prepare_batch_tensors_optimized(self, batch):
+        """Optimized tensor preparation."""
+        states = [e[0] for e in batch]
+        actions = [e[1] for e in batch]
+        rewards = [e[2] for e in batch]
+        next_states = [e[3] for e in batch if e[3] is not None]
+        dones = [e[4] for e in batch]
+        
+        # Convert to numpy arrays first, then to tensors
+        current_maps_np = np.stack([s["current_map"] for s in states])
+        placed_masks_np = np.stack([s["placed_mask"] for s in states])
+        value_densities_np = np.stack([s["value_density"] for s in states])
+        features_np = np.stack([s["features"] for s in states])
+        
+        # Convert to tensors
+        current_maps = torch.from_numpy(current_maps_np).float().to(self.device)
+        placed_masks = torch.from_numpy(placed_masks_np).float().to(self.device)
+        value_densities = torch.from_numpy(value_densities_np).float().to(self.device)
+        features = torch.from_numpy(features_np).float().to(self.device)
+        
+        state_batch = {
+            "current_map": current_maps,
+            "placed_mask": placed_masks,
+            "value_density": value_densities,
+            "features": features,
+        }
+        
+        return state_batch, actions, rewards, next_states, dones
+    
+    def _train_step(self):
+        """Enhanced training step with Double DQN."""
+        batch = self.replay_buffer.sample(self.config.batch_size)
+        if batch is None:
+            return None
+        
+        try:
+            state_batch, actions, rewards, next_states, dones = self._prepare_batch_tensors_optimized(batch)
+            
+            # Convert actions to indices
+            action_indices = []
+            for action in actions:
+                if isinstance(action, (list, tuple)) and len(action) == 2:
+                    x, y = action
+                    idx = x * self.config.map_size + y
+                else:
+                    idx = action
+                action_indices.append(idx)
+            
+            action_indices = torch.LongTensor(action_indices).to(self.device)
+            
+            # Enhanced training with proper Double DQN
+            if self.use_amp:
+                with torch.amp.autocast('cuda'):
+                    # Get current Q values
+                    current_q_values = self.agent.q_network(state_batch)
+                    if current_q_values.dim() == 3:
+                        current_q_values = current_q_values.view(current_q_values.size(0), -1)
+                    current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+                    
+                    # Calculate target Q values with Double DQN
+                    with torch.no_grad():
+                        target_q_values = torch.FloatTensor(rewards).to(self.device)
+                        
+                        if next_states:
+                            # Prepare next state batch
+                            next_states_full = []
+                            non_final_mask = []
+                            for i, (s, d) in enumerate(zip([e[3] for e in batch], dones)):
+                                if s is not None and not d:
+                                    next_states_full.append(s)
+                                    non_final_mask.append(i)
+                            
+                            if next_states_full:
+                                next_state_batch = self._prepare_batch_tensors_optimized(
+                                    [(s, None, None, None, None) for s in next_states_full]
+                                )[0]
+                                
+                                # Double DQN: use online network to select actions
+                                next_q_values = self.agent.q_network(next_state_batch)
+                                if next_q_values.dim() == 3:
+                                    next_q_values = next_q_values.view(next_q_values.size(0), -1)
+                                next_actions = next_q_values.max(1)[1]
+                                
+                                # Use target network to evaluate actions
+                                next_q_values_target = self.agent.target_network(next_state_batch)
+                                if next_q_values_target.dim() == 3:
+                                    next_q_values_target = next_q_values_target.view(next_q_values_target.size(0), -1)
+                                next_q_selected = next_q_values_target.gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                                
+                                # Add future rewards for non-terminal states
+                                for i, idx in enumerate(non_final_mask):
+                                    target_q_values[idx] += self.agent.gamma * next_q_selected[i]
+                    
+                    loss = nn.SmoothL1Loss()(current_q_values, target_q_values)
+                
+                self.agent.optimizer.zero_grad()
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.agent.optimizer)
+                self.scaler.update()
+            else:
+                # Same logic without mixed precision
+                current_q_values = self.agent.q_network(state_batch)
+                if current_q_values.dim() == 3:
+                    current_q_values = current_q_values.view(current_q_values.size(0), -1)
+                current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+                
+                with torch.no_grad():
+                    target_q_values = torch.FloatTensor(rewards).to(self.device)
+                    
+                    # Prepare next states properly
+                    next_states_full = []
+                    non_final_mask = []
+                    for i, (s, d) in enumerate(zip([e[3] for e in batch], dones)):
+                        if s is not None and not d:
+                            next_states_full.append(s)
+                            non_final_mask.append(i)
+                    
+                    if next_states_full:
+                        next_state_batch = self._prepare_batch_tensors_optimized(
+                            [(s, None, None, None, None) for s in next_states_full]
+                        )[0]
+                        
+                        next_q_values = self.agent.q_network(next_state_batch)
+                        if next_q_values.dim() == 3:
+                            next_q_values = next_q_values.view(next_q_values.size(0), -1)
+                        next_actions = next_q_values.max(1)[1]
+                        
+                        next_q_values_target = self.agent.target_network(next_state_batch)
+                        if next_q_values_target.dim() == 3:
+                            next_q_values_target = next_q_values_target.view(next_q_values_target.size(0), -1)
+                        next_q_selected = next_q_values_target.gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                        
+                        for i, idx in enumerate(non_final_mask):
+                            target_q_values[idx] += self.agent.gamma * next_q_selected[i]
+                
+                loss = nn.SmoothL1Loss()(current_q_values, target_q_values)
+                
+                self.agent.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.agent.q_network.parameters(), 1.0)
+                self.agent.optimizer.step()
+            
+            self.training_step += 1
+            
+            # Soft update target network
+            self.agent.soft_update_target_network()
+            
+            # Hard update target network periodically
+            if self.target_update_checker.should_execute(self.training_step):
+                self.agent.update_target_network()
+            
+            return loss.item()
+            
+        except Exception as e:
+            print(f"Training step error: {e}")
+            return None
+    
+    def _cleanup_memory(self):
+        """Cleanup memory periodically."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    def train(self):
+        """Main training loop with enhancements."""
+        print("=" * 100)
+        print("ENHANCED RANDOMIZED RADII PARALLEL TRAINING")
+        print("=" * 100)
+        print(f"Episodes: {self.config.n_episodes}")
+        print(f"Workers: {self.config.n_workers}")
+        print(f"Map size: {self.config.map_size}")
+        print(f"Device: {self.device}")
+        print(f"\nEnhancements:")
+        print(f"  - Better reward shaping with efficiency and tight packing bonuses")
+        print(f"  - Enhanced heuristic agent with smart exploration")
+        print(f"  - Double DQN with soft updates")
+        print(f"  - Larger batch size ({self.config.batch_size}) and buffer ({self.config.buffer_size:,})")
+        print(f"  - Exponential epsilon decay")
+        print(f"\nSave Configuration:")
+        print(f"  - Model checkpoints: ~20 saves (every {self.model_save_checker.interval} episodes)")
+        print(f"  - Visualizations: ~100 saves (every {self.image_save_checker.interval} episodes)")
+        print(f"  - Progress updates: ~50 times (every {self.eval_checker.interval} episodes)")
+        print(f"  - All saves in: checkpoints/ and visualizations/ directories")
+        print("=" * 100)
+        
+        pbar = tqdm(total=self.config.n_episodes, desc="Enhanced Training")
+        last_episode_count = 0
+        start_time = time.time()
+        
+        while len(self.episode_rewards) < self.config.n_episodes:
+            current_episodes = len(self.episode_rewards)
+            pbar.update(current_episodes - last_episode_count)
+            last_episode_count = current_episodes
+            
+            # Update epsilon
+            self._update_epsilon()
+            
+            # Train if we have enough experiences
+            if len(self.replay_buffer) > self.config.batch_size * self.config.gradient_accumulation_steps:
+                total_loss = 0
+                num_batches = 0
+                
+                for _ in range(self.config.gradient_accumulation_steps):
+                    loss = self._train_step()
+                    if loss is not None:
+                        total_loss += loss
+                        num_batches += 1
+                
+                if num_batches > 0:
+                    self.losses.append(total_loss / num_batches)
+            
+            # Update progress bar with enhanced metrics
+            if current_episodes > 0:
+                recent_coverage = np.mean(self.episode_coverage[-1000:]) if len(self.episode_coverage) >= 1000 else np.mean(self.episode_coverage) if self.episode_coverage else 0
+                recent_reward = np.mean(self.episode_rewards[-1000:]) if len(self.episode_rewards) >= 1000 else np.mean(self.episode_rewards) if self.episode_rewards else 0
+                recent_efficiency = np.mean(self.efficiency_scores[-1000:]) if len(self.efficiency_scores) >= 1000 else np.mean(self.efficiency_scores) if self.efficiency_scores else 0
+                
+                with self.epsilon_value.get_lock():
+                    current_epsilon = self.epsilon_value.value
+                
+                pbar.set_postfix({
+                    "Coverage": f"{recent_coverage:.1%}",
+                    "Reward": f"{recent_reward:.2f}",
+                    "Efficiency": f"{recent_efficiency:.3f}",
+                    "Buffer": f"{len(self.replay_buffer):,}",
+                    "Loss": f"{np.mean(self.losses[-100:]):.4f}" if self.losses else "N/A",
+                    "ε": f"{current_epsilon:.3f}"
+                })
+            
+            # Use robust periodic checkers for all periodic tasks
+            if current_episodes > 0:
+                # Progress updates
+                if self.progress_checker.should_execute(current_episodes):
+                    self._print_progress_update(current_episodes)
+                
+                # Model checkpoint saving
+                if self.model_save_checker.should_execute(current_episodes):
+                    self._save_checkpoint(current_episodes)
+                    self._cleanup_memory()
+                
+                # Visualization saving
+                if self.image_save_checker.should_execute(current_episodes):
+                    self._quick_visualize(current_episodes)
+                    self._save_training_progress_plot(current_episodes)
+            
+            time.sleep(0.01)
+        
+        pbar.close()
+        
+        # Final statistics
+        end_time = time.time()
+        training_time = end_time - start_time
+        
+        print("\n" + "=" * 100)
+        print("ENHANCED RANDOMIZED RADII TRAINING COMPLETE!")
+        print("=" * 100)
+        print(f"Training time: {training_time:.2f} seconds ({training_time/60:.1f} minutes)")
+        print(f"Episodes per second: {self.config.n_episodes / training_time:.2f}")
+        print(f"Final average coverage: {np.mean(self.episode_coverage[-1000:]):.1%}")
+        print(f"Best coverage achieved: {max(self.episode_coverage):.1%}")
+        print(f"Average efficiency score: {np.mean(self.efficiency_scores):.3f}")
+        print(f"Total training steps: {self.training_step:,}")
+        
+        self._save_final_model()
+        self._cleanup()
+    
+    def _print_progress_update(self, episode: int):
+        """Print detailed progress update."""
+        if len(self.episode_rewards) < 50:
+            return
+        
+        recent_coverage = np.mean(self.episode_coverage[-200:])
+        recent_rewards = np.mean(self.episode_rewards[-200:])
+        recent_efficiency = np.mean(self.efficiency_scores[-200:])
+        best_coverage = max(self.episode_coverage)
+        
+        print(f"\n🎯 Episode {episode:,} Progress (Enhanced):")
+        print(f"   Coverage: {recent_coverage:.1%} (Best: {best_coverage:.1%})")
+        print(f"   Reward: {recent_rewards:.2f}")
+        print(f"   Efficiency: {recent_efficiency:.3f}")
+        print(f"   Training Steps: {self.training_step:,}")
+        print(f"   Buffer: {len(self.replay_buffer):,}/{self.config.buffer_size:,}")
+    
+    def _save_checkpoint(self, episode: int):
+        """Save training checkpoint."""
+        try:
+            checkpoint_path = f"checkpoints/enhanced_checkpoint_ep{episode:06d}.pth"
+            
+            save_data = {
+                "episode": episode,
+                "model_state_dict": self.agent.q_network.state_dict(),
+                "optimizer_state_dict": self.agent.optimizer.state_dict(),
+                "training_step": self.training_step,
+                "episode_rewards": self.episode_rewards[-1000:],
+                "episode_coverage": self.episode_coverage[-1000:],
+                "efficiency_scores": self.efficiency_scores[-1000:],
+                "config": self.config
+            }
+            
+            torch.save(save_data, checkpoint_path)
+            print(f"   ✅ Checkpoint saved: {checkpoint_path}")
+            
+        except Exception as e:
+            print(f"   ❌ Error saving checkpoint: {e}")
+    
+    def _save_final_model(self):
+        """Save the final trained model."""
+        try:
+            model_path = "enhanced_randomized_radii_final_model.pth"
+            
+            save_data = {
+                "model_state_dict": self.agent.q_network.state_dict(),
+                "optimizer_state_dict": self.agent.optimizer.state_dict(),
+                "training_step": self.training_step,
+                "episode_rewards": self.episode_rewards,
+                "episode_coverage": self.episode_coverage,
+                "efficiency_scores": self.efficiency_scores,
+                "config": self.config
+            }
+            
+            torch.save(save_data, model_path)
+            print(f"   ✅ Final model saved: {model_path}")
+            
+        except Exception as e:
+            print(f"   ❌ Error saving final model: {e}")
+    
+    def _quick_visualize(self, episode: int):
+        """Quick visualization."""
+        try:
+            save_path = f"visualizations/enhanced_strategy_ep{episode:06d}.png"
+            # For now, just print - full visualization would be similar to original
+            print(f"📸 Visualization would be saved to: {save_path}")
+        except Exception as e:
+            print(f"❌ Visualization error: {e}")
+    
+    def _save_training_progress_plot(self, episode: int):
+        """Save training progress plot with enhanced metrics."""
+        try:
+            save_path = f"visualizations/enhanced_progress_ep{episode:06d}.png"
+            
+            episodes = np.arange(len(self.episode_coverage))
+            plt.figure(figsize=(15, 10))
+            
+            # Coverage
+            plt.subplot(2, 2, 1)
+            plt.plot(episodes, self.episode_coverage, 'b-', linewidth=2)
+            plt.axhline(y=0.37, color='r', linestyle='--', alpha=0.5, label='Previous plateau')
+            plt.title('Coverage Over Episodes')
+            plt.xlabel('Episode')
+            plt.ylabel('Coverage (%)')
+            plt.legend()
+            plt.grid(True)
+            plt.ylim(0, 1.05)
+            
+            # Rewards
+            plt.subplot(2, 2, 2)
+            plt.plot(episodes, self.episode_rewards, 'g-', linewidth=2)
+            plt.title('Reward Over Episodes')
+            plt.xlabel('Episode')
+            plt.ylabel('Reward')
+            plt.grid(True)
+            
+            # Efficiency scores
+            plt.subplot(2, 2, 3)
+            plt.plot(episodes, self.efficiency_scores, 'm-', linewidth=2)
+            plt.title('Efficiency Score Over Episodes')
+            plt.xlabel('Episode')
+            plt.ylabel('Efficiency')
+            plt.grid(True)
+            
+            # Loss
+            if self.losses:
+                plt.subplot(2, 2, 4)
+                plt.plot(self.losses, 'r-', linewidth=1, alpha=0.7)
+                plt.title('Training Loss')
+                plt.xlabel('Training Step')
+                plt.ylabel('Loss')
+                plt.yscale('log')
+                plt.grid(True)
+            
+            plt.suptitle(f'Enhanced Training Progress - Episode {episode}')
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"📊 Progress plot saved: {save_path}")
+        except Exception as e:
+            print(f"❌ Error saving progress plot: {e}")
+    
+    def _cleanup(self):
+        """Clean up resources."""
+        for worker in self.workers:
+            worker.terminate()
+        
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        gc.collect()
 
 
-@dataclass
-class EnhancedRandomizedRadiiConfig:
-    """Configuration for enhanced randomized radii training."""
-    n_episodes: int = 100000
-    n_workers: int = 32
-    map_size: int = 128
-    batch_size: int = 256  # Increased from 128
-    buffer_size: int = 1000000  # Increased from 500000
-    gradient_accumulation_steps: int = 4  # Increased from 2
-    learning_rate: float = 5e-5  # Reduced from 1e-4
-    epsilon_start: float = 0.8  # Reduced from 1.0
-    epsilon_end: float = 0.05  # Increased from 0.01
-    epsilon_decay_episodes: int = 50000  # Increased from 40000
-    target_update_freq: int = 2000  # Increased from 1000
-    visualize_every: int = 2000
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+def main():
+    """Main training function."""
+    # Detect system capabilities
+    n_cores = mp.cpu_count()
+    n_workers = min(n_cores - 1, 32)  # Leave one core free
+    
+    print(f"System: {n_cores} cores")
+    print(f"Using {n_workers} workers for enhanced training")
+    
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name()}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    
+    # Configuration
+    config = EnhancedRandomizedRadiiConfig(
+        n_episodes=100000,
+        n_workers=n_workers,
+        map_size=128,
+    )
+    
+    # Create trainer and start training
+    trainer = EnhancedRandomizedRadiiTrainer(config)
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()
