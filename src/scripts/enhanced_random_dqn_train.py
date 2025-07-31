@@ -940,10 +940,144 @@ class EnhancedRandomizedRadiiTrainer:
         """Quick visualization."""
         try:
             save_path = f"visualizations/enhanced_strategy_ep{episode:06d}.png"
-            # For now, just print - full visualization would be similar to original
-            print(f"📸 Visualization would be saved to: {save_path}")
+            
+            # Create a test environment for visualization
+            test_env = EnhancedRandomizedRadiiEnvironment(self.config.map_size)
+            weighted_matrix = random_seeder(self.config.map_size, time_steps=100000)
+            state = test_env.reset(weighted_matrix)
+            
+            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+            
+            # Original heatmap
+            axes[0, 0].imshow(test_env.original_map, cmap="hot")
+            axes[0, 0].set_title("Original Heatmap")
+            axes[0, 0].axis("off")
+            
+            # Track metrics
+            coverage_history = [0.0]
+            efficiency_history = []
+            radii_used = []
+            
+            # Show placements step by step
+            steps_to_show = [2, min(5, len(test_env.radii)-1), min(8, len(test_env.radii)-1)]
+            step_idx = 0
+            
+            for i in range(len(test_env.radii)):
+                current_radius = test_env.radii[i]
+                radii_used.append(current_radius)
+                
+                # Get valid actions mask
+                valid_mask = np.ones((self.config.map_size, self.config.map_size), dtype=bool)
+                valid_mask[:current_radius, :] = False
+                valid_mask[-current_radius:, :] = False
+                valid_mask[:, :current_radius] = False
+                valid_mask[:, -current_radius:] = False
+                
+                # Get agent's action using enhanced heuristic
+                heuristic_agent = EnhancedHeuristicAgent(self.config.map_size)
+                state_with_info = state.copy()
+                state_with_info["current_radius"] = current_radius
+                state_with_info["placed_circles"] = test_env.placed_circles.copy()
+                action = heuristic_agent.act(state_with_info, valid_mask.flatten(), epsilon=0.0)  # No randomness
+                
+                # Take step
+                state, reward, done, info = test_env.step(action)
+                coverage_history.append(info["coverage"])
+                if "efficiency" in info:
+                    efficiency_history.append(info["efficiency"])
+                
+                # Visualize at specific steps
+                if i + 1 in steps_to_show and step_idx < 3:
+                    positions = [(0, 1), (0, 2), (1, 1)]
+                    row, col = positions[step_idx]
+                    
+                    axes[row, col].imshow(test_env.original_map, cmap="hot", alpha=0.6)
+                    
+                    # Draw circles with different colors for different sizes
+                    for j, (x, y, r) in enumerate(test_env.placed_circles):
+                        # Color by size: red=large, blue=medium, green=small
+                        if r >= 15:
+                            color = 'red'
+                        elif r >= 8:
+                            color = 'blue'
+                        else:
+                            color = 'green'
+                        circle = plt.Circle((y, x), r, fill=False, color=color, linewidth=2)
+                        axes[row, col].add_patch(circle)
+                    
+                    coverage_improvement = coverage_history[-1] - coverage_history[-2] if len(coverage_history) > 1 else 0
+                    axes[row, col].set_title(f"Step {i + 1}: r={current_radius}, Cov {info['coverage']:.1%} (+{coverage_improvement:.1%})")
+                    axes[row, col].axis("off")
+                    
+                    step_idx += 1
+                
+                if done:
+                    break
+            
+            # Final result
+            axes[1, 0].imshow(test_env.original_map, cmap="hot", alpha=0.6)
+            for j, (x, y, r) in enumerate(test_env.placed_circles):
+                if r >= 15:
+                    color = 'red'
+                elif r >= 8:
+                    color = 'blue'
+                else:
+                    color = 'green'
+                circle = plt.Circle((y, x), r, fill=False, color=color, linewidth=2)
+                axes[1, 0].add_patch(circle)
+            
+            axes[1, 0].set_title(f"Final: {info['coverage']:.1%} coverage")
+            axes[1, 0].axis("off")
+            
+            # Coverage progress
+            axes[1, 1].plot(coverage_history, 'g-', linewidth=2, marker='o')
+            axes[1, 1].set_title("Coverage Progress")
+            axes[1, 1].set_xlabel("Circle Placement")
+            axes[1, 1].set_ylabel("Coverage")
+            axes[1, 1].grid(True)
+            
+            # Enhanced info with efficiency
+            config_text = f"Episode: {episode}\n"
+            config_text += f"Circles: {len(test_env.radii)}\n"
+            config_text += f"Radii: {test_env.radii}\n"
+            config_text += f"Achieved: {info['coverage']:.1%}\n"
+            config_text += f"Avg Efficiency: {np.mean(efficiency_history):.3f}\n" if efficiency_history else ""
+            config_text += f"Training Steps: {self.training_step:,}\n"
+            config_text += f"Buffer: {len(self.replay_buffer):,}\n"
+            
+            # Add recent performance stats
+            if len(self.episode_coverage) > 100:
+                recent_coverage = np.mean(self.episode_coverage[-100:])
+                recent_reward = np.mean(self.episode_rewards[-100:])
+                recent_efficiency = np.mean(self.efficiency_scores[-100:]) if len(self.efficiency_scores) > 100 else 0
+                config_text += f"Recent Avg Coverage: {recent_coverage:.1%}\n"
+                config_text += f"Recent Avg Reward: {recent_reward:.1f}\n"
+                config_text += f"Recent Avg Efficiency: {recent_efficiency:.3f}"
+            
+            axes[1, 2].text(0.05, 0.95, config_text, fontsize=10, transform=axes[1, 2].transAxes, 
+                           verticalalignment='top', fontfamily='monospace')
+            axes[1, 2].set_title("Configuration & Stats")
+            axes[1, 2].axis("off")
+            
+            # Add legend for circle colors
+            legend_text = "Circle Sizes:\n🔴 Large (≥15)\n🔵 Medium (8-14)\n🟢 Small (<8)"
+            axes[0, 1].text(0.02, 0.02, legend_text, fontsize=10, transform=axes[0, 1].transAxes,
+                           verticalalignment='bottom', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            plt.suptitle(f"Enhanced Randomized Radii Agent - Episode {episode} ({len(test_env.radii)} circles)")
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            
+            print(f"📸 Visualization saved: {save_path}")
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
         except Exception as e:
             print(f"❌ Visualization error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _save_training_progress_plot(self, episode: int):
         """Save training progress plot with enhanced metrics."""
