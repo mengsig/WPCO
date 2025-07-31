@@ -600,6 +600,15 @@ class WorkingRandomizedRadiiTrainer:
         last_episode_count = 0
         start_time = time.time()
         
+        # Test save functionality immediately
+        print("🧪 Testing save functionality...")
+        try:
+            test_save_path = "test_save_functionality.pth"
+            torch.save({"test": "data"}, test_save_path)
+            print(f"✅ Save test successful: {test_save_path}")
+        except Exception as e:
+            print(f"❌ Save test failed: {e}")
+        
         while len(self.episode_rewards) < self.config.n_episodes:
             current_episodes = len(self.episode_rewards)
             pbar.update(current_episodes - last_episode_count)
@@ -643,14 +652,21 @@ class WorkingRandomizedRadiiTrainer:
             # Progress updates
             if current_episodes > 0 and current_episodes % 200 == 0:
                 self._print_progress_update(current_episodes)
+                print(f"🔢 Episode count check: {current_episodes} episodes completed")
             
             # Periodic cleanup and saving
             if current_episodes % 500 == 0:
                 gc.collect()
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
             
-            if current_episodes > 0 and current_episodes % 5000 == 0:
+            # Checkpoint saving (more frequent for testing)
+            if current_episodes > 0 and current_episodes % 1000 == 0:
                 self._save_checkpoint(current_episodes)
+                print(f"📁 Checkpoint triggered at episode {current_episodes}")
+            
+            # Also save every 5000 episodes as originally intended
+            if current_episodes > 0 and current_episodes % 5000 == 0:
+                print(f"🎯 Major checkpoint at episode {current_episodes}")
             
             time.sleep(0.01)
         
@@ -713,21 +729,27 @@ class WorkingRandomizedRadiiTrainer:
     
     def _save_checkpoint(self, episode: int):
         """Save training checkpoint."""
-        checkpoint_path = f"working_randomized_checkpoint_episode_{episode}.pth"
-        
-        save_data = {
-            "episode": episode,
-            "model_state_dict": self.agent.q_network.state_dict(),
-            "optimizer_state_dict": self.agent.optimizer.state_dict(),
-            "training_step": self.training_step,
-            "episode_rewards": self.episode_rewards[-1000:],
-            "episode_coverage": self.episode_coverage[-1000:],
-            "n_circles_history": self.n_circles_history[-1000:],
-            "config": self.config
-        }
-        
-        torch.save(save_data, checkpoint_path)
-        print(f"   💾 Checkpoint saved: {checkpoint_path}")
+        try:
+            checkpoint_path = f"working_randomized_checkpoint_episode_{episode}.pth"
+            
+            print(f"🔄 Attempting to save checkpoint at episode {episode}...")
+            
+            save_data = {
+                "episode": episode,
+                "model_state_dict": self.agent.q_network.state_dict(),
+                "optimizer_state_dict": self.agent.optimizer.state_dict(),
+                "training_step": self.training_step,
+                "episode_rewards": self.episode_rewards[-1000:] if len(self.episode_rewards) > 1000 else self.episode_rewards,
+                "episode_coverage": self.episode_coverage[-1000:] if len(self.episode_coverage) > 1000 else self.episode_coverage,
+                "n_circles_history": self.n_circles_history[-1000:] if len(self.n_circles_history) > 1000 else self.n_circles_history,
+                "config": self.config
+            }
+            
+            torch.save(save_data, checkpoint_path)
+            print(f"   ✅ Checkpoint successfully saved: {checkpoint_path}")
+            
+        except Exception as e:
+            print(f"   ❌ Error saving checkpoint: {e}")
     
     def _save_final_model(self):
         """Save the trained model and metrics."""
