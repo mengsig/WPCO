@@ -448,18 +448,19 @@ class FixedThreadSafeReplayBuffer:
 @dataclass
 class EnhancedRandomizedRadiiConfig:
     """Configuration for enhanced randomized radii training."""
-    n_episodes: int = 100000
+    n_episodes: int = 2000000  # 2 million episodes for massive simulation
     n_workers: int = 32
     map_size: int = 128
     batch_size: int = 256  # Increased from 128
     buffer_size: int = 1000000  # Increased from 500000
     gradient_accumulation_steps: int = 4  # Increased from 2
     learning_rate: float = 5e-5  # Reduced from 1e-4
-    epsilon_start: float = 0.8  # Reduced from 1.0
-    epsilon_end: float = 0.05  # Increased from 0.01
-    epsilon_decay_episodes: int = 50000  # Increased from 40000
+    epsilon_start: float = 1.0  # Start with full exploration
+    epsilon_end: float = 0.01  # Very low final exploration
+    epsilon_decay_episodes: int = 1500000  # Decay over 75% of training
     target_update_freq: int = 2000  # Increased from 1000
-    visualize_every: int = 2000
+    visualize_every: int = 5000  # Save image every 5000 episodes
+    checkpoint_every: int = 100000  # Backup model every 100k episodes
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -527,20 +528,19 @@ class EnhancedRandomizedRadiiTrainer:
         self.map_diversity_stats = []
         self.worker_stats = {}
         
-        # Calculate save frequencies based on total episodes
-        n_model_saves = 20
-        n_image_saves = 100
+        # Fixed save frequencies for massive simulation
+        # Images: every 5000 episodes (400 total images over 2M episodes)
+        # Models: every 100k episodes (20 model backups)
+        # Progress: every 10k episodes (200 updates)
         
-        # Periodic checkers with calculated frequencies
-        model_save_freq = max(100, config.n_episodes // n_model_saves)
-        image_save_freq = max(100, config.n_episodes // n_image_saves)
-        eval_freq = max(100, config.n_episodes // 50)  # ~50 evaluations
+        self.model_save_checker = RobustPeriodicChecker(self.config.checkpoint_every)
+        self.image_save_checker = RobustPeriodicChecker(self.config.visualize_every)
+        self.eval_checker = RobustPeriodicChecker(10000)  # Progress every 10k episodes
         
-        self.model_save_checker = RobustPeriodicChecker(model_save_freq)
-        self.image_save_checker = RobustPeriodicChecker(image_save_freq)
-        self.eval_checker = RobustPeriodicChecker(eval_freq)
-        
-        print(f"Save frequencies - Models: every {model_save_freq} episodes, Images: every {image_save_freq} episodes")
+        print(f"Save frequencies for 2M episode simulation:")
+        print(f"  - Model checkpoints: every {self.config.checkpoint_every:,} episodes (~20 saves)")
+        print(f"  - Visualizations: every {self.config.visualize_every:,} episodes (~400 images)")
+        print(f"  - Progress updates: every 10,000 episodes (~200 updates)")
         
         # Create directories for organized saving
         os.makedirs('checkpoints', exist_ok=True)
@@ -603,12 +603,28 @@ class EnhancedRandomizedRadiiTrainer:
                 continue
     
     def _update_epsilon(self):
-        """Update shared epsilon value with smoother decay."""
+        """Update shared epsilon value with sophisticated decay for massive simulation."""
         current_episodes = len(self.episode_rewards)
         
-        # Use exponential decay instead of linear
-        decay_rate = -np.log(self.config.epsilon_end / self.config.epsilon_start) / self.config.epsilon_decay_episodes
-        new_epsilon = self.config.epsilon_start * np.exp(-decay_rate * current_episodes)
+        # Three-phase epsilon decay for better exploration:
+        # Phase 1 (0-500k): Slow decay from 1.0 to 0.5 (heavy exploration)
+        # Phase 2 (500k-1.5M): Faster decay from 0.5 to 0.05 (balanced)
+        # Phase 3 (1.5M-2M): Very slow decay from 0.05 to 0.01 (exploitation)
+        
+        if current_episodes < 500000:
+            # Phase 1: Slow linear decay for thorough exploration
+            progress = current_episodes / 500000
+            new_epsilon = 1.0 - (0.5 * progress)
+        elif current_episodes < 1500000:
+            # Phase 2: Exponential decay for balanced exploration/exploitation
+            progress = (current_episodes - 500000) / 1000000
+            # Exponential decay from 0.5 to 0.05
+            new_epsilon = 0.5 * np.exp(-3.2 * progress)  # 0.5 * e^(-3.2) ≈ 0.05
+        else:
+            # Phase 3: Very slow decay for fine-tuning
+            progress = (current_episodes - 1500000) / 500000
+            new_epsilon = 0.05 - (0.04 * progress)
+        
         new_epsilon = max(new_epsilon, self.config.epsilon_end)
         
         with self.epsilon_value.get_lock():
@@ -781,9 +797,9 @@ class EnhancedRandomizedRadiiTrainer:
     def train(self):
         """Main training loop with enhancements."""
         print("=" * 100)
-        print("ENHANCED RANDOMIZED RADII PARALLEL TRAINING")
+        print("ENHANCED RANDOMIZED RADII PARALLEL TRAINING - MASSIVE SIMULATION")
         print("=" * 100)
-        print(f"Episodes: {self.config.n_episodes}")
+        print(f"Episodes: {self.config.n_episodes:,}")
         print(f"Workers: {self.config.n_workers}")
         print(f"Map size: {self.config.map_size}")
         print(f"Device: {self.device}")
@@ -792,11 +808,14 @@ class EnhancedRandomizedRadiiTrainer:
         print(f"  - Enhanced heuristic agent with smart exploration")
         print(f"  - Double DQN with soft updates")
         print(f"  - Larger batch size ({self.config.batch_size}) and buffer ({self.config.buffer_size:,})")
-        print(f"  - Exponential epsilon decay")
+        print(f"  - Three-phase epsilon decay for optimal exploration:")
+        print(f"    • Phase 1 (0-500k): Heavy exploration (ε: 1.0→0.5)")
+        print(f"    • Phase 2 (500k-1.5M): Balanced (ε: 0.5→0.05)")
+        print(f"    • Phase 3 (1.5M-2M): Fine-tuning (ε: 0.05→0.01)")
         print(f"\nSave Configuration:")
-        print(f"  - Model checkpoints: ~20 saves (every {self.model_save_checker.interval} episodes)")
-        print(f"  - Visualizations: ~100 saves (every {self.image_save_checker.interval} episodes)")
-        print(f"  - Progress updates: ~50 times (every {self.eval_checker.interval} episodes)")
+        print(f"  - Model checkpoints: every {self.config.checkpoint_every:,} episodes")
+        print(f"  - Visualizations: every {self.config.visualize_every:,} episodes")
+        print(f"  - Progress updates: every 10,000 episodes")
         print(f"  - All saves in: checkpoints/ and visualizations/ directories")
         print("=" * 100)
         
@@ -835,7 +854,16 @@ class EnhancedRandomizedRadiiTrainer:
                 with self.epsilon_value.get_lock():
                     current_epsilon = self.epsilon_value.value
                 
+                # Determine epsilon phase
+                if current_episodes < 500000:
+                    phase = "P1:Explore"
+                elif current_episodes < 1500000:
+                    phase = "P2:Balance"
+                else:
+                    phase = "P3:Exploit"
+                
                 pbar.set_postfix({
+                    "Phase": phase,
                     "Coverage": f"{recent_coverage:.1%}",
                     "Reward": f"{recent_reward:.2f}",
                     "Efficiency": f"{recent_efficiency:.3f}",
@@ -1148,9 +1176,18 @@ class EnhancedRandomizedRadiiTrainer:
 
 def main():
     """Main training function."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Enhanced Random DQN Training')
+    parser.add_argument('--episodes', type=int, default=2000000, 
+                        help='Number of episodes to train (default: 2,000,000)')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of workers (default: auto-detect)')
+    args = parser.parse_args()
+    
     # Detect system capabilities
     n_cores = mp.cpu_count()
-    n_workers = min(n_cores - 1, 32)  # Leave one core free
+    n_workers = args.workers if args.workers else min(n_cores - 1, 32)  # Leave one core free
     
     print(f"System: {n_cores} cores")
     print(f"Using {n_workers} workers for enhanced training")
@@ -1161,7 +1198,7 @@ def main():
     
     # Configuration
     config = EnhancedRandomizedRadiiConfig(
-        n_episodes=100000,
+        n_episodes=args.episodes,
         n_workers=n_workers,
         map_size=128,
     )
