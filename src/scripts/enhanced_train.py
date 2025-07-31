@@ -12,32 +12,35 @@ import matplotlib.pyplot as plt
 from collections import deque
 import random
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from algorithms.dqn_agent import (
+from src.algorithms.dqn_agent import (
     AdvancedCirclePlacementEnv,
     GuidedDQNAgent,
     random_seeder,
     compute_included,
 )
-from algorithms.advanced_enhancements import (
+from src.algorithms.advanced_enhancements import (
     AdvancedFeatureExtractor,
     ImprovedCirclePlacementNet,
     CurriculumLearningScheduler,
     ExperiencePrioritization,
     create_enhanced_training_config,
 )
-from utils.periodic_tracker import RobustPeriodicChecker
+from src.utils.periodic_tracker import RobustPeriodicChecker
 
 
 class EnhancedCirclePlacementEnv(AdvancedCirclePlacementEnv):
     """Enhanced environment with advanced features."""
     
     def __init__(self, map_size=128, radii=None, use_advanced_features=True):
-        super().__init__(map_size, radii)
+        # Set attributes before calling super().__init__
         self.use_advanced_features = use_advanced_features
         if use_advanced_features:
             self.advanced_extractor = AdvancedFeatureExtractor(map_size)
+        
+        # Now call parent init which will call reset()
+        super().__init__(map_size, radii)
     
     def _get_enhanced_state(self):
         """Get state with advanced features."""
