@@ -635,17 +635,6 @@ class FastAsyncRandomizedRadiiTrainer:
                 with torch.amp.autocast('cuda'):
                     current_q_values = self.agent.q_network(state_batch)
                     
-                    # Debug: Check tensor shapes
-                    if hasattr(self, '_debug_shapes') and not self._debug_shapes:
-                        print(f"Debug - Batch shapes:")
-                        print(f"  current_map: {state_batch['current_map'].shape}")
-                        print(f"  placed_mask: {state_batch['placed_mask'].shape}")
-                        print(f"  value_density: {state_batch['value_density'].shape}")
-                        print(f"  features: {state_batch['features'].shape}")
-                        print(f"  q_values shape: {current_q_values.shape}")
-                        print(f"  action_indices length: {len(action_indices)}")
-                        self._debug_shapes = True
-                    
                     # Convert actions to tensor indices
                     action_indices = []
                     for action in actions:
@@ -657,6 +646,18 @@ class FastAsyncRandomizedRadiiTrainer:
                         action_indices.append(idx)
                     
                     action_indices = torch.LongTensor(action_indices).to(self.device)
+                    
+                    # Debug: Check tensor shapes
+                    if hasattr(self, '_debug_shapes') and not self._debug_shapes:
+                        print(f"Debug - Batch shapes:")
+                        print(f"  current_map: {state_batch['current_map'].shape}")
+                        print(f"  placed_mask: {state_batch['placed_mask'].shape}")
+                        print(f"  value_density: {state_batch['value_density'].shape}")
+                        print(f"  features: {state_batch['features'].shape}")
+                        print(f"  q_values shape: {current_q_values.shape}")
+                        print(f"  action_indices length: {len(action_indices)}")
+                        self._debug_shapes = True
+                    
                     # Fix dimension mismatch: ensure action_indices has correct shape
                     if current_q_values.dim() == 3:  # Shape: [batch, height, width]
                         current_q_values = current_q_values.view(current_q_values.size(0), -1)  # Flatten to [batch, height*width]
@@ -676,16 +677,6 @@ class FastAsyncRandomizedRadiiTrainer:
                 # CPU training
                 current_q_values = self.agent.q_network(state_batch)
                 
-                # Debug: Check tensor shapes
-                if hasattr(self, '_debug_shapes') and not self._debug_shapes:
-                    print(f"Debug - Batch shapes (CPU):")
-                    print(f"  current_map: {state_batch['current_map'].shape}")
-                    print(f"  placed_mask: {state_batch['placed_mask'].shape}")
-                    print(f"  value_density: {state_batch['value_density'].shape}")
-                    print(f"  features: {state_batch['features'].shape}")
-                    print(f"  q_values shape: {current_q_values.shape}")
-                    self._debug_shapes = True
-                
                 action_indices = []
                 for action in actions:
                     if isinstance(action, (list, tuple)) and len(action) == 2:
@@ -696,6 +687,18 @@ class FastAsyncRandomizedRadiiTrainer:
                     action_indices.append(idx)
                 
                 action_indices = torch.LongTensor(action_indices).to(self.device)
+                
+                # Debug: Check tensor shapes (CPU)
+                if hasattr(self, '_debug_shapes') and not self._debug_shapes:
+                    print(f"Debug - Batch shapes (CPU):")
+                    print(f"  current_map: {state_batch['current_map'].shape}")
+                    print(f"  placed_mask: {state_batch['placed_mask'].shape}")
+                    print(f"  value_density: {state_batch['value_density'].shape}")
+                    print(f"  features: {state_batch['features'].shape}")
+                    print(f"  q_values shape: {current_q_values.shape}")
+                    print(f"  action_indices length: {len(action_indices)}")
+                    self._debug_shapes = True
+                
                 # Fix dimension mismatch: ensure action_indices has correct shape
                 if current_q_values.dim() == 3:  # Shape: [batch, height, width]
                     current_q_values = current_q_values.view(current_q_values.size(0), -1)  # Flatten to [batch, height*width]
@@ -911,22 +914,32 @@ class FastAsyncRandomizedRadiiTrainer:
                     "Epsilon": f"{current_epsilon:.3f}"
                 })
             
-            # Quick visualization (temporarily disabled for debugging)
-            # if current_episodes > 0 and current_episodes > 2000:  # Only after some training
-            #     self._quick_visualize(current_episodes)
+            # Quick visualization (re-enabled after training is stable)
+            if current_episodes > 0 and current_episodes > 10000:  # Only after stable training
+                try:
+                    self._quick_visualize(current_episodes)
+                except Exception as e:
+                    print(f"Visualization error (continuing training): {e}")
             
-            # Periodic evaluation (temporarily disabled for debugging)
-            # if current_episodes > 0 and current_episodes % self.config.visualize_every == 0:
-            #     self._evaluate_and_visualize(current_episodes)
+            # Periodic evaluation (re-enabled after training is stable)
+            if current_episodes > 0 and current_episodes % self.config.visualize_every == 0 and current_episodes > 10000:
+                try:
+                    self._evaluate_and_visualize(current_episodes)
+                except Exception as e:
+                    print(f"Evaluation error (continuing training): {e}")
             
-            # Progress updates
+            # Progress updates (re-enabled)
             if current_episodes > 0 and current_episodes % 200 == 0:
                 self._print_progress_update(current_episodes)
             
-            # Periodic cleanup
+            # Periodic cleanup and saving
             if current_episodes % 500 == 0:
                 gc.collect()
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+            # Periodic model saving
+            if current_episodes > 0 and current_episodes % 5000 == 0:
+                self._save_checkpoint(current_episodes)
             
             time.sleep(0.01)  # Prevent busy waiting
         
@@ -1008,6 +1021,26 @@ class FastAsyncRandomizedRadiiTrainer:
         self.visualize_strategy(episode, save_path)
         print(f"   💾 Saved evaluation visualization: {save_path}")
     
+    def _save_checkpoint(self, episode: int):
+        """Save training checkpoint."""
+        checkpoint_path = f"fast_async_randomized_checkpoint_episode_{episode}.pth"
+        
+        save_data = {
+            "episode": episode,
+            "model_state_dict": self.agent.q_network.state_dict(),
+            "optimizer_state_dict": self.agent.optimizer.state_dict(),
+            "training_step": self.training_step,
+            "episode_rewards": self.episode_rewards[-1000:],  # Save last 1000 episodes
+            "episode_coverage": self.episode_coverage[-1000:],
+            "normalized_coverage": self.normalized_coverage[-1000:],
+            "n_circles_history": self.n_circles_history[-1000:],
+            "max_theoretical_coverage_history": self.max_theoretical_coverage_history[-1000:],
+            "config": self.config
+        }
+        
+        torch.save(save_data, checkpoint_path)
+        print(f"   💾 Checkpoint saved: {checkpoint_path}")
+    
     def _save_final_model(self):
         """Save the trained model and metrics."""
         model_path = "fast_async_randomized_radii_dqn_model.pth"
@@ -1025,7 +1058,7 @@ class FastAsyncRandomizedRadiiTrainer:
         }
         
         torch.save(save_data, model_path)
-        print(f"   💾 Model saved: {model_path}")
+        print(f"   💾 Final model saved: {model_path}")
     
     def _cleanup(self):
         """Clean up resources."""
