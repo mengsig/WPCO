@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from src.algorithms.dqn_agent import GuidedDQNAgent, AdvancedCirclePlacementEnv, compute_included
+from src.algorithms.dqn_agent import GuidedDQNAgent, AdvancedCirclePlacementEnv, compute_included, random_seeder
 
 @dataclass
 class FastAsyncConfig:
@@ -99,11 +99,9 @@ class FastRandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         self.placed_circles = []
         self.previous_coverage = 0.0
         
-        # Generate new random map
+        # Generate new random map using proper random_seeder
         if weighted_matrix is None:
-            # Fast random map generation
-            self.original_map = np.random.exponential(scale=2.0, size=(self.map_size, self.map_size))
-            self.original_map = np.clip(self.original_map, 0, 10)
+            self.original_map = random_seeder(self.map_size, time_steps=100000)
         else:
             self.original_map = weighted_matrix.copy()
         
@@ -190,69 +188,39 @@ class FastRandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         current_coverage = 1.0 - (self.current_map.sum() / (self.original_map.sum() + 1e-6))
         coverage_improvement = current_coverage - self.previous_coverage
         
-        # FAST REWARD CALCULATION
+        # SIMPLIFIED REWARD CALCULATION (like the working versions)
         reward = 0.0
         
-        if included_weight > 0:
-            # 1. Value collection reward
-            circle_importance = (len(self.radii) - self.current_radius_idx) / len(self.radii)
-            value_reward = included_weight * circle_importance * 2.0
-            reward += value_reward
-            
-            # 2. Coverage improvement reward (normalized)
-            max_theoretical_coverage = self._calculate_max_theoretical_coverage_fast()
-            if max_theoretical_coverage > 0:
-                coverage_reward = (coverage_improvement / max_theoretical_coverage) * 10.0
-                reward += coverage_reward
-            
-            # 3. High-value targeting bonus
-            circle_area = np.pi * current_radius * current_radius
-            avg_value_in_circle = included_weight / max(circle_area, 1)
-            map_avg_value = self.original_map.mean()
-            if map_avg_value > 0:
-                hotspot_bonus = max(0, (avg_value_in_circle / map_avg_value - 1.0) * 2.0)
-                reward += hotspot_bonus
-            
-            # 4. Strategic placement bonus for early circles
-            if self.current_radius_idx < len(self.radii) * 0.3:
-                value_efficiency = included_weight / circle_area
-                selectivity_bonus = value_efficiency * 1.5
-                reward += selectivity_bonus
-        else:
-            # Heavy penalty for empty placements
-            wasted_penalty = current_radius * 0.5
-            reward -= wasted_penalty
+        # Basic reward: value collected
+        reward += included_weight
         
-        # Apply penalties
-        reward -= overlap_penalty
+        # Coverage improvement bonus
+        if coverage_improvement > 0:
+            reward += coverage_improvement * 100.0  # Scale coverage improvement
         
-        # Fast boundary penalty
-        edge_threshold = current_radius * 1.2
+        # Overlap penalty
+        reward -= overlap_penalty * 10.0  # Strong overlap penalty
+        
+        # Boundary penalty
         edge_distance = min(x, y, self.map_size - x, self.map_size - y)
-        if edge_distance < edge_threshold:
-            boundary_penalty = (edge_threshold - edge_distance) / edge_threshold
-            reward -= boundary_penalty
+        if edge_distance < current_radius:
+            boundary_penalty = (current_radius - edge_distance) / current_radius
+            reward -= boundary_penalty * 5.0
         
         # Move to next radius
         self.current_radius_idx += 1
         done = self.current_radius_idx >= len(self.radii)
         
-        # Final bonuses/penalties
+        # Final bonus for good coverage
         if done:
-            normalized_final_coverage = current_coverage / max(self._calculate_max_theoretical_coverage_fast(), 0.1)
-            
-            if normalized_final_coverage > 0.9:
-                reward += 15.0
-            elif normalized_final_coverage > 0.8:
+            if current_coverage > 0.8:
+                reward += 50.0
+            elif current_coverage > 0.6:
+                reward += 20.0
+            elif current_coverage > 0.4:
                 reward += 10.0
-            elif normalized_final_coverage > 0.7:
-                reward += 5.0
-            elif normalized_final_coverage > 0.6:
-                reward += 2.0
-            elif normalized_final_coverage < 0.3:
-                reward -= 5.0
-            elif normalized_final_coverage < 0.2:
-                reward -= 10.0
+            elif current_coverage < 0.2:
+                reward -= 20.0
         
         self.previous_coverage = current_coverage
         
@@ -630,26 +598,24 @@ class FastAsyncRandomizedRadiiTrainer:
         try:
             state_batch, actions, rewards, next_states, dones = self._prepare_batch_tensors_optimized(batch)
             
+            # Convert actions to tensor indices FIRST
+            action_indices = []
+            for action in actions:
+                if isinstance(action, (list, tuple)) and len(action) == 2:
+                    x, y = action
+                    idx = x * self.config.map_size + y
+                else:
+                    idx = action
+                action_indices.append(idx)
+            
             # Forward pass
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
                     current_q_values = self.agent.q_network(state_batch)
                     
-                    # Convert actions to tensor indices
-                    action_indices = []
-                    for action in actions:
-                        if isinstance(action, (list, tuple)) and len(action) == 2:
-                            x, y = action
-                            idx = x * self.config.map_size + y
-                        else:
-                            idx = action
-                        action_indices.append(idx)
-                    
-                    action_indices = torch.LongTensor(action_indices).to(self.device)
-                    
                     # Debug: Check tensor shapes
                     if hasattr(self, '_debug_shapes') and not self._debug_shapes:
-                        print(f"Debug - Batch shapes:")
+                        print(f"Debug - Batch shapes (GPU):")
                         print(f"  current_map: {state_batch['current_map'].shape}")
                         print(f"  placed_mask: {state_batch['placed_mask'].shape}")
                         print(f"  value_density: {state_batch['value_density'].shape}")
@@ -658,10 +624,12 @@ class FastAsyncRandomizedRadiiTrainer:
                         print(f"  action_indices length: {len(action_indices)}")
                         self._debug_shapes = True
                     
+                    action_indices_tensor = torch.LongTensor(action_indices).to(self.device)
+                    
                     # Fix dimension mismatch: ensure action_indices has correct shape
                     if current_q_values.dim() == 3:  # Shape: [batch, height, width]
                         current_q_values = current_q_values.view(current_q_values.size(0), -1)  # Flatten to [batch, height*width]
-                    current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+                    current_q_values = current_q_values.gather(1, action_indices_tensor.unsqueeze(1)).squeeze(1)
                     
                     # Calculate target Q-values
                     target_q_values = torch.FloatTensor(rewards).to(self.device)
@@ -677,17 +645,6 @@ class FastAsyncRandomizedRadiiTrainer:
                 # CPU training
                 current_q_values = self.agent.q_network(state_batch)
                 
-                action_indices = []
-                for action in actions:
-                    if isinstance(action, (list, tuple)) and len(action) == 2:
-                        x, y = action
-                        idx = x * self.config.map_size + y
-                    else:
-                        idx = action
-                    action_indices.append(idx)
-                
-                action_indices = torch.LongTensor(action_indices).to(self.device)
-                
                 # Debug: Check tensor shapes (CPU)
                 if hasattr(self, '_debug_shapes') and not self._debug_shapes:
                     print(f"Debug - Batch shapes (CPU):")
@@ -699,10 +656,12 @@ class FastAsyncRandomizedRadiiTrainer:
                     print(f"  action_indices length: {len(action_indices)}")
                     self._debug_shapes = True
                 
+                action_indices_tensor = torch.LongTensor(action_indices).to(self.device)
+                
                 # Fix dimension mismatch: ensure action_indices has correct shape
                 if current_q_values.dim() == 3:  # Shape: [batch, height, width]
                     current_q_values = current_q_values.view(current_q_values.size(0), -1)  # Flatten to [batch, height*width]
-                current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+                current_q_values = current_q_values.gather(1, action_indices_tensor.unsqueeze(1)).squeeze(1)
                 
                 target_q_values = torch.FloatTensor(rewards).to(self.device)
                 loss = nn.MSELoss()(current_q_values, target_q_values)
