@@ -478,10 +478,13 @@ class EnhancedRandomizedRadiiTrainer:
             learning_rate=config.learning_rate,
             epsilon_start=config.epsilon_start,
             epsilon_end=config.epsilon_end,
-            epsilon_decay_steps=config.epsilon_decay_episodes,
+            epsilon_decay_steps=999999999,  # Set to huge number to disable internal decay
             batch_size=config.batch_size,
             tau=0.005,  # Slightly higher for faster target updates
         )
+        
+        # Override agent's epsilon with our controlled value
+        self.agent.epsilon = config.epsilon_start
         
         # Use mixed precision if available
         self.use_amp = torch.cuda.is_available()
@@ -630,6 +633,11 @@ class EnhancedRandomizedRadiiTrainer:
         with self.epsilon_value.get_lock():
             self.epsilon_value.value = new_epsilon
             self.agent.epsilon = new_epsilon
+        
+        # Debug print every 10k episodes
+        if current_episodes % 10000 == 0 and current_episodes > 0:
+            phase = "Phase 1" if current_episodes < 500000 else "Phase 2" if current_episodes < 1500000 else "Phase 3"
+            print(f"\n📊 Epsilon Update - Episode {current_episodes:,}: ε = {new_epsilon:.4f} ({phase})")
     
     def _prepare_batch_tensors_optimized(self, batch):
         """Optimized tensor preparation."""
