@@ -395,8 +395,12 @@ def fast_async_randomized_worker_process(config, result_queue, epsilon_value, wo
                 valid_mask[:, :current_radius] = False
                 valid_mask[:, -current_radius:] = False
                 
+                # Add placed circles to state for heuristic agent
+                state_with_circles = state.copy()
+                state_with_circles["placed_circles"] = env.placed_circles
+                
                 # Get action from heuristic agent
-                action = agent.act(state, valid_mask.flatten(), current_epsilon)
+                action = agent.act(state_with_circles, valid_mask.flatten(), current_epsilon)
                 
                 # Take step
                 next_state, reward, done, info = env.step(action)
@@ -475,9 +479,11 @@ class FastAsyncRandomizedRadiiTrainer:
         # Initialize agent
         self.agent = GuidedDQNAgent(
             map_size=config.map_size,
-            learning_rate=config.learning_rate,
-            device=self.device
+            learning_rate=config.learning_rate
         )
+        
+        # Ensure agent uses the correct device
+        self.device = self.agent.device
         
         # Mixed precision training
         self.use_amp = torch.cuda.is_available()
