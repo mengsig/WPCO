@@ -48,30 +48,35 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         self.feature_extractor = HeatmapFeatureExtractor(map_size)
         
     def _generate_random_radii(self):
-        """Generate random number of circles with random sizes."""
+        """Generate random number of circles with random sizes - OPTIMIZED."""
         # Random number of circles (3-15 circles)
         n_circles = np.random.randint(3, 16)
         
-        # Generate random radii with some constraints
+        # Generate random radii with some constraints - VECTORIZED
         min_radius = 2
-        max_radius = min(20, self.map_size // 8)  # Don't make circles too big
+        max_radius = min(20, self.map_size // 8)
         
-        # Create diverse set of radii
+        # Vectorized generation for speed
         radii = []
-        for _ in range(n_circles):
-            # Bias towards smaller circles but allow some large ones
-            if np.random.random() < 0.7:  # 70% chance of small-medium circles
-                radius = np.random.randint(min_radius, max_radius // 2)
-            else:  # 30% chance of larger circles
-                radius = np.random.randint(max_radius // 2, max_radius + 1)
-            radii.append(radius)
+        small_medium_count = int(n_circles * 0.7)  # 70% small-medium
+        large_count = n_circles - small_medium_count  # 30% large
+        
+        # Generate small-medium circles
+        if small_medium_count > 0:
+            small_radii = np.random.randint(min_radius, max_radius // 2 + 1, size=small_medium_count)
+            radii.extend(small_radii.tolist())
+        
+        # Generate large circles
+        if large_count > 0:
+            large_radii = np.random.randint(max_radius // 2, max_radius + 1, size=large_count)
+            radii.extend(large_radii.tolist())
         
         # Sort radii in descending order (place large circles first)
         self.radii = sorted(radii, reverse=True)
         self.n_circles = len(self.radii)
         
-        # Calculate theoretical maximum coverage for normalization
-        self._calculate_max_theoretical_coverage()
+        # Calculate theoretical maximum coverage for normalization - CACHED
+        self._calculate_max_theoretical_coverage_fast()
         
     def _calculate_max_theoretical_coverage(self):
         """Calculate theoretical maximum coverage for normalization."""
@@ -81,6 +86,17 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         
         # Apply overlap discount (circles can't achieve 100% efficiency)
         overlap_factor = 0.8  # Assume 20% area loss due to overlaps and boundaries
+        self.max_theoretical_coverage = min(1.0, (total_area * overlap_factor) / map_area)
+    
+    def _calculate_max_theoretical_coverage_fast(self):
+        """OPTIMIZED: Calculate theoretical maximum coverage using vectorized operations."""
+        # Vectorized calculation for speed
+        radii_array = np.array(self.radii, dtype=np.float32)
+        total_area = np.sum(np.pi * radii_array * radii_array)
+        map_area = self.map_size * self.map_size
+        
+        # Apply overlap discount (circles can't achieve 100% efficiency)
+        overlap_factor = 0.8
         self.max_theoretical_coverage = min(1.0, (total_area * overlap_factor) / map_area)
         
     def reset(self, weighted_matrix=None):
@@ -98,6 +114,12 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         self.current_radius_idx = 0
         self.total_weight_collected = 0
         self.previous_coverage = 0.0
+        
+        # Clear caches for optimization
+        if hasattr(self, '_cached_total_area'):
+            delattr(self, '_cached_total_area')
+        if hasattr(self, '_cached_areas'):
+            delattr(self, '_cached_areas')
         
         # Set up maps
         self.original_map = weighted_matrix.copy()
@@ -143,33 +165,42 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         }
     
     def _normalize_features(self, raw_features, current_radius):
-        """Normalize features for variable configurations."""
-        features = np.zeros(10)  # Fixed size feature vector
+        """OPTIMIZED: Normalize features for variable configurations."""
+        features = np.zeros(10, dtype=np.float32)  # Fixed size feature vector
+        
+        # Cache frequently used values
+        original_sum = self.original_map.sum()
+        current_sum = self.current_map.sum()
+        original_max = self.original_map.max()
         
         # Basic coverage and density features
-        current_coverage = 1 - (self.current_map.sum() / self.original_map.sum()) if self.original_map.sum() > 0 else 0
+        current_coverage = 1 - (current_sum / original_sum) if original_sum > 0 else 0
         features[0] = current_coverage
         features[1] = current_coverage / max(self.max_theoretical_coverage, 0.01)  # Normalized coverage
         
-        # Circle configuration features
-        features[2] = current_radius / 20.0  # Normalized current radius
+        # Circle configuration features - OPTIMIZED
+        features[2] = current_radius * 0.05  # current_radius / 20.0
         features[3] = len(self.radii) / 15.0  # Normalized number of circles
         features[4] = self.current_radius_idx / max(len(self.radii) - 1, 1)  # Progress through circles
         
-        # Remaining potential
-        remaining_area = sum(np.pi * r * r for r in self.radii[self.current_radius_idx:])
-        total_area = sum(np.pi * r * r for r in self.radii)
-        features[5] = remaining_area / max(total_area, 1)  # Remaining potential
+        # Remaining potential - VECTORIZED
+        if not hasattr(self, '_cached_total_area'):
+            radii_array = np.array(self.radii, dtype=np.float32)
+            self._cached_areas = np.pi * radii_array * radii_array
+            self._cached_total_area = np.sum(self._cached_areas)
         
-        # Map characteristics
-        if self.current_map.sum() > 0:
-            features[6] = self.current_map.mean() / self.original_map.max()
-            features[7] = self.current_map.std() / self.original_map.max()
-            features[8] = self.current_map.max() / self.original_map.max()
+        remaining_area = np.sum(self._cached_areas[self.current_radius_idx:])
+        features[5] = remaining_area / max(self._cached_total_area, 1)  # Remaining potential
+        
+        # Map characteristics - OPTIMIZED
+        if current_sum > 0:
+            features[6] = self.current_map.mean() / original_max
+            features[7] = self.current_map.std() / original_max
+            features[8] = self.current_map.max() / original_max
         
         # Cluster information (if available)
         if "num_clusters" in raw_features:
-            features[9] = min(raw_features["num_clusters"] / 10.0, 1.0)
+            features[9] = min(raw_features["num_clusters"] * 0.1, 1.0)  # /10.0 optimized
         
         return features
     
@@ -364,8 +395,8 @@ class RandomizedHeuristicAgent:
             best_value = -1
             best_action = None
             
-            # Sample more positions for larger circles, fewer for smaller ones
-            n_samples = max(10, min(50, int(20 * (current_radius / 10.0))))
+            # Sample more positions for larger circles, fewer for smaller ones - OPTIMIZED
+            n_samples = max(10, min(30, int(15 + current_radius)))  # Faster calculation
             
             for _ in range(n_samples):
                 x = np.random.randint(current_radius, self.map_size - current_radius)
@@ -840,9 +871,13 @@ class RandomizedRadiiTrainer:
                     "Epsilon": f"{current_epsilon:.3f}"
                 })
             
-            # Periodic evaluation
+            # Periodic evaluation and visualization
             if current_episodes > 0 and current_episodes % self.config.visualize_every == 0:
                 self._evaluate_and_visualize(current_episodes)
+            
+            # More frequent visualization (every 100 episodes)
+            if current_episodes > 0 and current_episodes % 100 == 0:
+                self._quick_visualize(current_episodes)
             
             # More frequent progress updates (every 200 episodes)
             if current_episodes > 0 and current_episodes % 200 == 0:
@@ -950,6 +985,135 @@ class RandomizedRadiiTrainer:
             print(f"   ⚠️  Moderate alignment")
         else:
             print(f"   ❌ Weak alignment")
+    
+    def visualize_strategy(self, episode, save_path="randomized_strategy.png"):
+        """Visualize the randomized radii agent's strategy."""
+        # Use randomized radii environment for testing
+        test_env = RandomizedRadiiEnvironment(self.config.map_size)
+        weighted_matrix = random_seeder(self.config.map_size, time_steps=100000)
+        state = test_env.reset(weighted_matrix)
+        
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        
+        # Original heatmap
+        axes[0, 0].imshow(test_env.original_map, cmap="hot")
+        axes[0, 0].set_title("Original Heatmap")
+        axes[0, 0].axis("off")
+        
+        # Track coverage improvements and configuration
+        coverage_history = [0.0]
+        radii_used = []
+        
+        # Show placements step by step
+        steps_to_show = [2, min(5, len(test_env.radii)-1), min(8, len(test_env.radii)-1)]
+        step_idx = 0
+        
+        for i in range(len(test_env.radii)):
+            valid_mask = test_env.get_valid_actions_mask()
+            current_radius = test_env.radii[i]
+            radii_used.append(current_radius)
+            
+            # Get agent's action
+            with torch.no_grad():
+                state_batch = self.agent._prepare_state_batch([state])
+                q_values = self.agent.q_network(state_batch).squeeze(0)
+                
+                if valid_mask is not None:
+                    mask_tensor = torch.FloatTensor(valid_mask).to(self.device)
+                    q_values = q_values + (mask_tensor - 1) * 1e10
+                
+                action_idx = q_values.view(-1).argmax().item()
+                action = (action_idx // self.config.map_size, action_idx % self.config.map_size)
+            
+            # Take step
+            state, reward, done, info = test_env.step(action)
+            coverage_history.append(info["coverage"])
+            
+            # Visualize at specific steps
+            if i + 1 in steps_to_show and step_idx < 3:
+                positions = [(0, 1), (0, 2), (1, 1)]
+                row, col = positions[step_idx]
+                
+                axes[row, col].imshow(test_env.original_map, cmap="hot", alpha=0.6)
+                
+                # Draw circles with different colors for different sizes
+                for j, (x, y, r) in enumerate(test_env.placed_circles):
+                    # Color by size: red=large, blue=medium, green=small
+                    if r >= 15:
+                        color = 'red'
+                    elif r >= 8:
+                        color = 'blue'
+                    else:
+                        color = 'green'
+                    circle = plt.Circle((y, x), r, fill=False, color=color, linewidth=2)
+                    axes[row, col].add_patch(circle)
+                
+                coverage_improvement = coverage_history[-1] - coverage_history[-2] if len(coverage_history) > 1 else 0
+                axes[row, col].set_title(f"Step {i + 1}: r={current_radius}, Cov {info['coverage']:.1%} (+{coverage_improvement:.1%})")
+                axes[row, col].axis("off")
+                
+                step_idx += 1
+            
+            if done:
+                break
+        
+        # Final result
+        axes[1, 0].imshow(test_env.original_map, cmap="hot", alpha=0.6)
+        for j, (x, y, r) in enumerate(test_env.placed_circles):
+            if r >= 15:
+                color = 'red'
+            elif r >= 8:
+                color = 'blue'
+            else:
+                color = 'green'
+            circle = plt.Circle((y, x), r, fill=False, color=color, linewidth=2)
+            axes[1, 0].add_patch(circle)
+        
+        norm_coverage = info["coverage"] / info["max_theoretical_coverage"]
+        axes[1, 0].set_title(f"Final: {info['coverage']:.1%} ({norm_coverage:.1%} of max)")
+        axes[1, 0].axis("off")
+        
+        # Coverage progress
+        axes[1, 1].plot(coverage_history, 'g-', linewidth=2, marker='o')
+        axes[1, 1].set_title("Coverage Progress")
+        axes[1, 1].set_xlabel("Circle Placement")
+        axes[1, 1].set_ylabel("Coverage")
+        axes[1, 1].grid(True)
+        
+        # Configuration info
+        config_text = f"Episode: {episode}\n"
+        config_text += f"Circles: {len(test_env.radii)}\n"
+        config_text += f"Radii: {test_env.radii}\n"
+        config_text += f"Max Theoretical: {info['max_theoretical_coverage']:.1%}\n"
+        config_text += f"Achieved: {info['coverage']:.1%}\n"
+        config_text += f"Efficiency: {norm_coverage:.1%}\n"
+        config_text += f"Training Steps: {self.training_step:,}\n"
+        config_text += f"Buffer: {len(self.replay_buffer):,}"
+        
+        axes[1, 2].text(0.05, 0.95, config_text, fontsize=10, transform=axes[1, 2].transAxes, 
+                       verticalalignment='top', fontfamily='monospace')
+        axes[1, 2].set_title("Configuration & Stats")
+        axes[1, 2].axis("off")
+        
+        # Add legend for circle colors
+        legend_text = "Circle Sizes:\n🔴 Large (≥15)\n🔵 Medium (8-14)\n🟢 Small (<8)"
+        axes[0, 1].text(0.02, 0.02, legend_text, fontsize=10, transform=axes[0, 1].transAxes,
+                       verticalalignment='bottom', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+        
+        plt.suptitle(f"Randomized Radii Agent - Episode {episode} ({len(test_env.radii)} circles)")
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    def _quick_visualize(self, episode: int):
+        """Quick visualization every 100 episodes."""
+        try:
+            self.visualize_strategy(episode, f"randomized_strategy_ep{episode}.png")
+            print(f"📸 Visualization saved: randomized_strategy_ep{episode}.png")
+        except Exception as e:
+            print(f"Visualization error: {e}")
     
     def _evaluate_and_visualize(self, episode: int):
         """Evaluation with randomized radii metrics."""
