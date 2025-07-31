@@ -61,12 +61,24 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
             # Generate new random map
             weighted_matrix = random_seeder(self.map_size, time_steps=100000)
         
-        # Update the radii in the parent class
-        super().__init__(self.map_size, radii=self.radii)
+        # Reset environment state manually (avoid calling __init__ again)
+        self.current_radius_idx = 0
+        self.placed_circles = []
+        self.placement_order = []
+        self.total_weight_collected = 0
+        self.coverage_history = []
         
-        result = super().reset(weighted_matrix)
+        # Set up maps
+        self.original_map = weighted_matrix.copy()
+        self.current_map = weighted_matrix.copy()
+        
+        # Initialize feature extractor if needed
+        if not hasattr(self, 'feature_extractor'):
+            from src.algorithms.dqn_agent import HeatmapFeatureExtractor
+            self.feature_extractor = HeatmapFeatureExtractor(self.map_size)
+        
         self.previous_coverage = 0.0
-        return result
+        return self._get_enhanced_state()
     
     def step(self, action):
         """Step with simple, working reward function."""
