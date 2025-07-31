@@ -449,7 +449,7 @@ class FixedThreadSafeReplayBuffer:
 class EnhancedRandomizedRadiiConfig:
     """Configuration for enhanced randomized radii training."""
     n_episodes: int = 2000000  # 2 million episodes for massive simulation
-    n_workers: int = 32
+    n_workers: int = 64  # Increased from 32 to use more cores
     map_size: int = 128
     batch_size: int = 256  # Increased from 128
     buffer_size: int = 1000000  # Increased from 500000
@@ -493,6 +493,11 @@ class EnhancedRandomizedRadiiTrainer:
         
         # Shared epsilon value
         self.epsilon_value = mp.Value('f', config.epsilon_start)
+        
+        print(f"\n🎯 Initial epsilon configuration:")
+        print(f"   Config epsilon_start: {config.epsilon_start}")
+        print(f"   Agent epsilon: {self.agent.epsilon}")
+        print(f"   Shared epsilon value: {self.epsilon_value.value}")
         
         # Result queue for async communication
         self.result_queue = mp.Queue(maxsize=config.n_workers * 2)
@@ -831,6 +836,11 @@ class EnhancedRandomizedRadiiTrainer:
         last_episode_count = 0
         start_time = time.time()
         
+        print("\n📌 Note: Epsilon decay is based on EPISODES, not training steps!")
+        print(f"   Phase 1: Episodes 0-500k (ε: 1.0→0.5)")
+        print(f"   Phase 2: Episodes 500k-1.5M (ε: 0.5→0.05)")
+        print(f"   Phase 3: Episodes 1.5M-2M (ε: 0.05→0.01)\n")
+        
         while len(self.episode_rewards) < self.config.n_episodes:
             current_episodes = len(self.episode_rewards)
             pbar.update(current_episodes - last_episode_count)
@@ -879,6 +889,10 @@ class EnhancedRandomizedRadiiTrainer:
                     "Loss": f"{np.mean(self.losses[-100:]):.4f}" if self.losses else "N/A",
                     "ε": f"{current_epsilon:.3f}"
                 })
+                
+                # Debug epsilon every 1000 episodes
+                if current_episodes % 1000 == 0 and current_episodes > 0:
+                    print(f"\nDEBUG: Episode {current_episodes}, Epsilon from shared value: {current_epsilon:.6f}, Agent epsilon: {self.agent.epsilon:.6f}")
             
             # Use robust periodic checkers for all periodic tasks
             if current_episodes > 0:
@@ -1195,7 +1209,7 @@ def main():
     
     # Detect system capabilities
     n_cores = mp.cpu_count()
-    n_workers = args.workers if args.workers else min(n_cores - 1, 32)  # Leave one core free
+    n_workers = args.workers if args.workers else min(n_cores - 1, 64)  # Use up to 64 cores
     
     print(f"System: {n_cores} cores")
     print(f"Using {n_workers} workers for enhanced training")
