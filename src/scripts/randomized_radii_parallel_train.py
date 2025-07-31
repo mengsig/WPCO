@@ -143,9 +143,11 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         else:
             value_density = np.zeros_like(self.current_map)
         
-        # Extract features for current radius
+        # OPTIMIZED: Extract features for current radius - skip expensive feature extraction
         current_radius = self.radii[self.current_radius_idx] if self.current_radius_idx < len(self.radii) else self.radii[-1]
-        raw_features = self.feature_extractor.extract_features(self.current_map, current_radius)
+        
+        # Use simplified features for speed (skip expensive cluster detection)
+        raw_features = {"num_clusters": min(10, max(1, int(self.current_map.sum() / (self.original_map.sum() + 1) * 10)))}
         
         # Normalize features based on current configuration
         features = self._normalize_features(raw_features, current_radius)
@@ -215,15 +217,19 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         # Calculate base collection value
         included_weight = compute_included(self.current_map, x, y, radius)
         
-        # OVERLAP PENALTY - Check for overlaps with existing circles
+        # OPTIMIZED OVERLAP PENALTY - Vectorized calculation
         overlap_penalty = 0.0
-        for px, py, pr in self.placed_circles:
-            distance = np.sqrt((x - px)**2 + (y - py)**2)
-            min_distance = radius + pr
-            if distance < min_distance:
-                # Overlap detected - heavy penalty
-                overlap_ratio = (min_distance - distance) / min_distance
-                overlap_penalty += overlap_ratio * 2.0  # Strong penalty
+        if self.placed_circles:  # Only check if there are existing circles
+            # Vectorized distance calculation
+            placed_array = np.array([(px, py, pr) for px, py, pr in self.placed_circles])
+            distances = np.sqrt((x - placed_array[:, 0])**2 + (y - placed_array[:, 1])**2)
+            min_distances = radius + placed_array[:, 2]
+            
+            # Find overlaps
+            overlap_mask = distances < min_distances
+            if np.any(overlap_mask):
+                overlap_ratios = (min_distances[overlap_mask] - distances[overlap_mask]) / min_distances[overlap_mask]
+                overlap_penalty = np.sum(overlap_ratios) * 2.0
         
         # Update environment state
         self.placed_circles.append((x, y, radius))
@@ -277,12 +283,12 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
                 selectivity_bonus = value_efficiency * 3.0
                 reward += selectivity_bonus
             
-            # 5. REMAINING POTENTIAL BONUS - Consider future circles
+            # 5. OPTIMIZED REMAINING POTENTIAL BONUS - Use cached areas
             remaining_circles = len(self.radii) - self.current_radius_idx - 1
-            if remaining_circles > 0:
-                # Bonus for leaving good opportunities for future circles
+            if remaining_circles > 0 and hasattr(self, '_cached_areas'):
+                # Use cached areas for speed
                 remaining_value = self.current_map.sum()
-                total_remaining_area = sum(np.pi * r * r for r in self.radii[self.current_radius_idx + 1:])
+                total_remaining_area = np.sum(self._cached_areas[self.current_radius_idx + 1:])
                 if total_remaining_area > 0:
                     future_potential = remaining_value / total_remaining_area
                     potential_bonus = min(future_potential / self.original_map.max(), 1.0) * 1.0
@@ -297,12 +303,12 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         # 6. OVERLAP PENALTY - Apply the calculated overlap penalty
         reward -= overlap_penalty
         
-        # 7. BOUNDARY PENALTY - Penalize circles too close to edges
+        # 7. OPTIMIZED BOUNDARY PENALTY - Simplified calculation
         boundary_penalty = 0.0
+        edge_threshold = radius * 1.2
         edge_distance = min(x, y, self.map_size - x, self.map_size - y)
-        if edge_distance < radius * 1.2:  # Too close to edge
-            boundary_ratio = (radius * 1.2 - edge_distance) / (radius * 1.2)
-            boundary_penalty = boundary_ratio * 1.0
+        if edge_distance < edge_threshold:
+            boundary_penalty = (edge_threshold - edge_distance) / edge_threshold
         reward -= boundary_penalty
         
         # Move to next radius
@@ -404,6 +410,10 @@ class RandomizedHeuristicAgent:
         progress = state_dict.get("progress", 0.5)
         current_map = state_dict["current_map"]
         
+        # Clear cache for new episode/step
+        if hasattr(self, '_cached_map_avg'):
+            delattr(self, '_cached_map_avg')
+        
         if np.random.random() < epsilon:
             # SMART EXPLORATION with overlap avoidance
             if valid_mask is not None:
@@ -420,13 +430,15 @@ class RandomizedHeuristicAgent:
                                 if (i - x) ** 2 + (j - y) ** 2 <= current_radius**2:
                                     local_value += current_map[i, j]
                         
-                        # Check for overlaps with existing circles
+                        # OPTIMIZED: Check for overlaps with existing circles
                         overlap_penalty = 0
-                        for px, py, pr in env.placed_circles:
-                            distance = np.sqrt((x - px)**2 + (y - py)**2)
-                            min_distance = current_radius + pr
-                            if distance < min_distance * 1.1:  # Avoid near-overlaps too
-                                overlap_penalty += (min_distance * 1.1 - distance) / (min_distance * 1.1)
+                        if env.placed_circles:
+                            placed_array = np.array([(px, py, pr) for px, py, pr in env.placed_circles])
+                            distances = np.sqrt((x - placed_array[:, 0])**2 + (y - placed_array[:, 1])**2)
+                            min_distances = (current_radius + placed_array[:, 2]) * 1.1
+                            overlap_mask = distances < min_distances
+                            if np.any(overlap_mask):
+                                overlap_penalty = np.sum((min_distances[overlap_mask] - distances[overlap_mask]) / min_distances[overlap_mask])
                         
                         # Weight calculation with overlap avoidance
                         base_weight = local_value
@@ -459,39 +471,45 @@ class RandomizedHeuristicAgent:
             best_score = -float('inf')
             best_action = None
             
-            # More samples for larger circles (they need to be more careful)
-            n_samples = max(20, min(50, int(20 + current_radius * 2)))
+            # OPTIMIZED: Reduce samples for speed, focus on quality
+            n_samples = max(15, min(25, int(15 + current_radius)))  # Fewer samples
             
-            # First, find hotspots in the map
-            hotspot_threshold = current_map.mean() + current_map.std()
+            # FAST hotspot detection - use percentile instead of mean+std
+            hotspot_threshold = np.percentile(current_map, 85)  # Top 15%
             hotspots = np.argwhere(current_map > hotspot_threshold)
             
-            # Sample around hotspots (70% of samples) and randomly (30% of samples)
-            hotspot_samples = int(n_samples * 0.7)
+            # Limit hotspots for speed
+            if len(hotspots) > 50:
+                hotspot_indices = np.random.choice(len(hotspots), 50, replace=False)
+                hotspots = hotspots[hotspot_indices]
+            
+            # Sample around hotspots (60% of samples) and randomly (40% of samples)
+            hotspot_samples = int(n_samples * 0.6)
             random_samples = n_samples - hotspot_samples
             
             candidates = []
             
-            # Sample around hotspots
+            # VECTORIZED sampling around hotspots
             if len(hotspots) > 0 and hotspot_samples > 0:
-                for _ in range(hotspot_samples):
-                    # Pick a random hotspot
-                    hotspot_idx = np.random.randint(len(hotspots))
-                    hx, hy = hotspots[hotspot_idx]
-                    
-                    # Sample around the hotspot
-                    search_radius = min(current_radius * 2, 20)
-                    x = np.clip(hx + np.random.randint(-search_radius, search_radius + 1), 
-                               current_radius, self.map_size - current_radius - 1)
-                    y = np.clip(hy + np.random.randint(-search_radius, search_radius + 1), 
-                               current_radius, self.map_size - current_radius - 1)
-                    candidates.append((x, y))
+                # Vectorized hotspot sampling
+                hotspot_indices = np.random.choice(len(hotspots), hotspot_samples, replace=True)
+                selected_hotspots = hotspots[hotspot_indices]
+                
+                search_radius = min(current_radius * 2, 15)  # Smaller search radius
+                offsets = np.random.randint(-search_radius, search_radius + 1, size=(hotspot_samples, 2))
+                
+                candidate_coords = selected_hotspots + offsets
+                # Clip to valid bounds
+                candidate_coords[:, 0] = np.clip(candidate_coords[:, 0], current_radius, self.map_size - current_radius - 1)
+                candidate_coords[:, 1] = np.clip(candidate_coords[:, 1], current_radius, self.map_size - current_radius - 1)
+                
+                candidates.extend([(int(x), int(y)) for x, y in candidate_coords])
             
-            # Random samples
-            for _ in range(random_samples):
-                x = np.random.randint(current_radius, self.map_size - current_radius)
-                y = np.random.randint(current_radius, self.map_size - current_radius)
-                candidates.append((x, y))
+            # VECTORIZED random samples
+            if random_samples > 0:
+                random_x = np.random.randint(current_radius, self.map_size - current_radius, size=random_samples)
+                random_y = np.random.randint(current_radius, self.map_size - current_radius, size=random_samples)
+                candidates.extend([(int(x), int(y)) for x, y in zip(random_x, random_y)])
             
             # Evaluate all candidates
             for x, y in candidates:
@@ -502,29 +520,29 @@ class RandomizedHeuristicAgent:
                         if (i - x) ** 2 + (j - y) ** 2 <= current_radius**2:
                             local_value += current_map[i, j]
                 
-                # Calculate overlap penalty
+                # OPTIMIZED: Calculate penalties and bonuses
                 overlap_penalty = 0
-                for px, py, pr in env.placed_circles:
-                    distance = np.sqrt((x - px)**2 + (y - py)**2)
-                    min_distance = current_radius + pr
-                    if distance < min_distance:
-                        overlap_ratio = (min_distance - distance) / min_distance
-                        overlap_penalty += overlap_ratio * local_value * 3.0  # Heavy penalty
+                if env.placed_circles:
+                    placed_array = np.array([(px, py, pr) for px, py, pr in env.placed_circles])
+                    distances = np.sqrt((x - placed_array[:, 0])**2 + (y - placed_array[:, 1])**2)
+                    min_distances = current_radius + placed_array[:, 2]
+                    overlap_mask = distances < min_distances
+                    if np.any(overlap_mask):
+                        overlap_ratios = (min_distances[overlap_mask] - distances[overlap_mask]) / min_distances[overlap_mask]
+                        overlap_penalty = np.sum(overlap_ratios) * local_value * 3.0
                 
-                # Calculate boundary penalty
+                # FAST boundary penalty
+                edge_threshold = current_radius * 1.2
                 edge_distance = min(x, y, self.map_size - x, self.map_size - y)
-                boundary_penalty = 0
-                if edge_distance < current_radius * 1.2:
-                    boundary_ratio = (current_radius * 1.2 - edge_distance) / (current_radius * 1.2)
-                    boundary_penalty = boundary_ratio * local_value * 0.5
+                boundary_penalty = max(0, (edge_threshold - edge_distance) / edge_threshold * local_value * 0.5) if edge_distance < edge_threshold else 0
                 
-                # Calculate hotspot bonus
+                # SIMPLIFIED hotspot bonus - cache map_avg
+                if not hasattr(self, '_cached_map_avg'):
+                    self._cached_map_avg = current_map.mean()
+                
                 circle_area = np.pi * current_radius * current_radius
                 avg_value_in_circle = local_value / max(circle_area, 1)
-                map_avg = current_map.mean()
-                hotspot_bonus = 0
-                if map_avg > 0:
-                    hotspot_bonus = max(0, (avg_value_in_circle / map_avg - 1.0) * local_value * 0.5)
+                hotspot_bonus = max(0, (avg_value_in_circle / max(self._cached_map_avg, 1) - 1.0) * local_value * 0.5)
                 
                 # Configuration-aware scoring
                 score = local_value + hotspot_bonus - overlap_penalty - boundary_penalty
