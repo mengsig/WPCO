@@ -217,6 +217,10 @@ def coverage_aligned_worker_process(worker_id: int, config: CoverageAlignedConfi
     env = CoverageAlignedEnvironment(map_size=config.map_size)
     agent = CoverageHeuristicAgent(config.map_size)
     
+    # Worker statistics
+    episodes_completed = 0
+    maps_generated = 0
+    
     while True:
         try:
             # Check for stop signal
@@ -231,8 +235,9 @@ def coverage_aligned_worker_process(worker_id: int, config: CoverageAlignedConfi
             with epsilon_value.get_lock():
                 current_epsilon = epsilon_value.value
             
-            # Generate new map
+            # Generate NEW random map for EACH episode (ensures generalization!)
             weighted_matrix = random_seeder(config.map_size, time_steps=100000)
+            maps_generated += 1
             state = env.reset(weighted_matrix)
             
             # Pre-allocate lists for efficiency
@@ -280,6 +285,9 @@ def coverage_aligned_worker_process(worker_id: int, config: CoverageAlignedConfi
                 if done:
                     break
             
+            # Update worker statistics
+            episodes_completed += 1
+            
             # Send results efficiently
             result_data = {
                 "worker_id": worker_id,
@@ -288,6 +296,14 @@ def coverage_aligned_worker_process(worker_id: int, config: CoverageAlignedConfi
                 "coverage": info["coverage"],
                 "total_coverage_improvement": sum(coverage_improvements),
                 "avg_coverage_improvement": np.mean(coverage_improvements) if coverage_improvements else 0,
+                "episodes_completed": episodes_completed,
+                "maps_generated": maps_generated,
+                "map_diversity_stats": {
+                    "map_mean": float(weighted_matrix.mean()),
+                    "map_std": float(weighted_matrix.std()),
+                    "map_max": float(weighted_matrix.max()),
+                    "map_min": float(weighted_matrix.min()),
+                }
             }
             
             result_queue.put(result_data)
@@ -388,6 +404,10 @@ class CoverageAlignedTrainer:
         self.losses = []
         self.training_step = 0
         
+        # Map diversity tracking
+        self.map_diversity_stats = []
+        self.worker_stats = {}
+        
         # Experience collection thread
         self.collection_thread = threading.Thread(target=self._collect_experiences, daemon=True)
         self.collection_thread.start()
@@ -407,6 +427,17 @@ class CoverageAlignedTrainer:
                 self.episode_coverage.append(result_data["coverage"])
                 self.coverage_improvements.append(result_data["total_coverage_improvement"])
                 self.avg_coverage_improvements.append(result_data["avg_coverage_improvement"])
+                
+                # Track map diversity
+                if "map_diversity_stats" in result_data:
+                    self.map_diversity_stats.append(result_data["map_diversity_stats"])
+                
+                # Update worker statistics
+                worker_id = result_data["worker_id"]
+                self.worker_stats[worker_id] = {
+                    "episodes_completed": result_data.get("episodes_completed", 0),
+                    "maps_generated": result_data.get("maps_generated", 0)
+                }
                 
             except:
                 continue
@@ -698,9 +729,13 @@ class CoverageAlignedTrainer:
                     "Epsilon": f"{current_epsilon:.3f}"
                 })
             
-            # Periodic evaluation
+            # Periodic evaluation and print statements
             if current_episodes > 0 and current_episodes % self.config.visualize_every == 0:
                 self._evaluate_and_visualize(current_episodes)
+            
+            # More frequent progress updates (every 200 episodes)
+            if current_episodes > 0 and current_episodes % 200 == 0:
+                self._print_progress_update(current_episodes)
             
             # Periodic cleanup
             if current_episodes % 500 == 0:
@@ -731,6 +766,60 @@ class CoverageAlignedTrainer:
         
         self._save_final_model()
         self._cleanup()
+    
+    def _print_progress_update(self, episode: int):
+        """Print progress update every 200 episodes."""
+        if len(self.episode_rewards) < 50:  # Need some data
+            return
+            
+        recent_coverage = np.mean(self.episode_coverage[-200:]) if len(self.episode_coverage) >= 200 else np.mean(self.episode_coverage)
+        recent_rewards = np.mean(self.episode_rewards[-200:]) if len(self.episode_rewards) >= 200 else np.mean(self.episode_rewards)
+        recent_cov_imp = np.mean(self.avg_coverage_improvements[-200:]) if len(self.avg_coverage_improvements) >= 200 else np.mean(self.avg_coverage_improvements)
+        best_coverage = max(self.episode_coverage)
+        
+        # Calculate reward-coverage correlation
+        correlation = 0.0
+        if len(self.episode_rewards) > 100:
+            correlation = np.corrcoef(self.episode_rewards[-500:], self.episode_coverage[-500:])[0, 1]
+        
+        with self.epsilon_value.get_lock():
+            current_epsilon = self.epsilon_value.value
+        
+        print(f"\n📊 Episode {episode:,} Progress:")
+        print(f"   Coverage: {recent_coverage:.1%} (Best: {best_coverage:.1%})")
+        print(f"   Reward: {recent_rewards:.2f}")
+        print(f"   Coverage Improvement: {recent_cov_imp:.3f}")
+        print(f"   Reward-Coverage Correlation: {correlation:.3f}")
+        print(f"   Epsilon: {current_epsilon:.3f}")
+        print(f"   Training Steps: {self.training_step:,}")
+        print(f"   Buffer: {len(self.replay_buffer):,}/{self.config.buffer_size:,}")
+        
+        # Show map diversity stats
+        if self.map_diversity_stats:
+            recent_maps = self.map_diversity_stats[-200:] if len(self.map_diversity_stats) >= 200 else self.map_diversity_stats
+            map_means = [m["map_mean"] for m in recent_maps]
+            map_stds = [m["map_std"] for m in recent_maps]
+            map_maxes = [m["map_max"] for m in recent_maps]
+            
+            print(f"   🗺️  Map Diversity (recent {len(recent_maps)} maps):")
+            print(f"      Mean values: {np.mean(map_means):.2f} ± {np.std(map_means):.2f}")
+            print(f"      Std values: {np.mean(map_stds):.2f} ± {np.std(map_stds):.2f}")
+            print(f"      Max values: {np.mean(map_maxes):.2f} ± {np.std(map_maxes):.2f}")
+        
+        # Show worker stats
+        if self.worker_stats:
+            total_episodes = sum(stats["episodes_completed"] for stats in self.worker_stats.values())
+            total_maps = sum(stats["maps_generated"] for stats in self.worker_stats.values())
+            active_workers = len(self.worker_stats)
+            print(f"   👥 Workers: {active_workers} active, {total_maps:,} unique maps generated")
+        
+        # Show alignment status
+        if correlation > 0.7:
+            print(f"   ✅ Strong reward-coverage alignment!")
+        elif correlation > 0.3:
+            print(f"   ⚠️  Moderate alignment")
+        else:
+            print(f"   ❌ Weak alignment")
     
     def _evaluate_and_visualize(self, episode: int):
         """Evaluation with coverage-alignment metrics."""
