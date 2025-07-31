@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from collections import deque
 import random
@@ -341,27 +343,145 @@ class AsyncEnhancedTrainer:
             return None
         
         # Sample batch
-        batch = self.replay_buffer.sample(self.config['batch_size'])
+        batch_experiences = self.replay_buffer.sample(self.config['batch_size'])
         
-        # Convert to agent's memory format for compatibility
-        self.agent.memory.clear()
-        for exp in batch:
-            self.agent.memory.append((
-                exp.state,
-                exp.action,
-                exp.reward,
-                exp.next_state,
-                exp.done
-            ))
+        # Prepare batch tensors
+        states = [exp.state for exp in batch_experiences]
+        actions = [exp.action for exp in batch_experiences]
+        rewards = [exp.reward for exp in batch_experiences]
+        next_states = [exp.next_state for exp in batch_experiences]
+        dones = [exp.done for exp in batch_experiences]
         
-        # Train using enhanced replay
-        loss = self.agent.enhanced_replay()
+        # Convert states to tensors
+        current_maps = torch.FloatTensor(
+            np.array([s["current_map"] for s in states])
+        ).to(self.device)
         
-        if loss is not None:
-            self.losses.append(loss)
-            self.training_step += 1
+        placed_masks = torch.FloatTensor(
+            np.array([s["placed_mask"] for s in states])
+        ).to(self.device)
         
-        return loss
+        value_densities = torch.FloatTensor(
+            np.array([s["value_density"] for s in states])
+        ).to(self.device)
+        
+        features = torch.FloatTensor(
+            np.array([s["features"] for s in states])
+        ).to(self.device)
+        
+        state_batch = {
+            "current_map": current_maps,
+            "placed_mask": placed_masks,
+            "value_density": value_densities,
+            "features": features,
+        }
+        
+        # Get current Q values
+        current_q_values = self.agent.q_network(state_batch)
+        
+        # Convert actions to indices
+        action_indices = []
+        for a in actions:
+            x, y = int(a[0]), int(a[1])
+            # Clamp to valid range
+            x = max(0, min(x, self.agent.map_size - 1))
+            y = max(0, min(y, self.agent.map_size - 1))
+            idx = x * self.agent.map_size + y
+            action_indices.append(idx)
+        
+        action_indices = torch.LongTensor(action_indices).to(self.device)
+        
+        # Flatten Q values if needed
+        if current_q_values.dim() == 3:
+            current_q_values = current_q_values.view(len(states), -1)
+        
+        # Get Q values for taken actions
+        current_q_values = current_q_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+        
+        # Calculate target Q values
+        with torch.no_grad():
+            # Initialize target values with rewards
+            target_q_values = torch.FloatTensor(rewards).to(self.device)
+            
+            # Add future rewards for non-terminal states
+            non_final_mask = []
+            non_final_next_states = []
+            
+            for i, (next_state, done) in enumerate(zip(next_states, dones)):
+                if not done and next_state is not None:
+                    non_final_mask.append(i)
+                    non_final_next_states.append(next_state)
+            
+            if non_final_next_states:
+                # Prepare next state batch
+                next_current_maps = torch.FloatTensor(
+                    np.array([s["current_map"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_placed_masks = torch.FloatTensor(
+                    np.array([s["placed_mask"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_value_densities = torch.FloatTensor(
+                    np.array([s["value_density"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_features = torch.FloatTensor(
+                    np.array([s["features"] for s in non_final_next_states])
+                ).to(self.device)
+                
+                next_state_batch = {
+                    "current_map": next_current_maps,
+                    "placed_mask": next_placed_masks,
+                    "value_density": next_value_densities,
+                    "features": next_features,
+                }
+                
+                # Double DQN
+                next_q_values = self.agent.q_network(next_state_batch)
+                if next_q_values.dim() == 3:
+                    next_q_values = next_q_values.view(len(non_final_next_states), -1)
+                
+                next_actions = next_q_values.max(1)[1]
+                
+                next_q_values_target = self.agent.target_network(next_state_batch)
+                if next_q_values_target.dim() == 3:
+                    next_q_values_target = next_q_values_target.view(len(non_final_next_states), -1)
+                
+                next_q_selected = next_q_values_target.gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                
+                # Update target values for non-final states
+                for i, idx in enumerate(non_final_mask):
+                    target_q_values[idx] += self.agent.gamma * next_q_selected[i]
+        
+        # Calculate loss
+        loss = nn.functional.smooth_l1_loss(current_q_values, target_q_values)
+        
+        # Optimize
+        self.agent.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        grad_clip = self.config.get('gradient_clip', 1.0)
+        torch.nn.utils.clip_grad_norm_(self.agent.q_network.parameters(), grad_clip)
+        
+        self.agent.optimizer.step()
+        
+        # Soft update target network
+        self.agent.soft_update_target_network()
+        
+        # Update training step counter
+        self.training_step += 1
+        
+        # Update target network periodically
+        if self.training_step % self.config.get('target_update_freq', 1000) == 0:
+            self.agent.update_target_network()
+        
+        # Store loss
+        loss_value = loss.item()
+        self.losses.append(loss_value)
+        
+        return loss_value
     
     def train(self, total_episodes: int):
         """Main training loop."""
