@@ -860,11 +860,19 @@ class GuidedDQNAgent:
         self.optimizer.step()
 
         # Soft update target network
+        self.soft_update_target_network()
+
+        return loss.item()
+    
+    def update_target_network(self):
+        """Update the target network with current Q-network weights."""
+        self.target_network.load_state_dict(self.q_network.state_dict())
+    
+    def soft_update_target_network(self):
+        """Perform soft update of target network parameters."""
         for target_param, param in zip(
             self.target_network.parameters(), self.q_network.parameters()
         ):
             target_param.data.copy_(
                 self.tau * param.data + (1.0 - self.tau) * target_param.data
             )
-
-        return loss.item()
