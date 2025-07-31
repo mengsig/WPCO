@@ -130,7 +130,7 @@ class FastRandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         progress = self.current_radius_idx / len(self.radii)
         max_theoretical_coverage = self._calculate_max_theoretical_coverage_fast()
         
-        # Normalized features
+        # Normalized features (must be exactly 10 features to match SmartCirclePlacementNet)
         features = np.array([
             current_radius * 0.05,  # normalized radius
             remaining_circles / 15.0,  # normalized remaining
@@ -138,7 +138,14 @@ class FastRandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
             progress,  # progress
             max_theoretical_coverage,  # theoretical max
             self.current_map.sum() / (self.original_map.sum() + 1e-6),  # remaining value ratio
+            self.current_map.mean() / (self.original_map.mean() + 1e-6),  # current map density
+            self.current_map.max() / (self.original_map.max() + 1e-6),  # current max value ratio
+            len(self.placed_circles) / max(len(self.radii), 1),  # placement progress
+            1.0 if self.current_radius_idx > 0 else 0.0,  # has started placing
         ])
+        
+        # Verify we have exactly 10 features
+        assert len(features) == 10, f"Expected 10 features, got {len(features)}"
         
         return {
             "current_map": self.current_map,
@@ -531,6 +538,9 @@ class FastAsyncRandomizedRadiiTrainer:
         # Experience collection thread
         self.collection_thread = threading.Thread(target=self._collect_experiences, daemon=True)
         self.collection_thread.start()
+        
+        # Debug flag
+        self._debug_shapes = False
     
     def _collect_experiences(self):
         """Asynchronously collect experiences from workers."""
@@ -619,6 +629,15 @@ class FastAsyncRandomizedRadiiTrainer:
         
         try:
             state_batch, actions, rewards, next_states, dones = self._prepare_batch_tensors_optimized(batch)
+            
+            # Debug: Check tensor shapes
+            if hasattr(self, '_debug_shapes') and not self._debug_shapes:
+                print(f"Debug - Batch shapes:")
+                print(f"  current_map: {state_batch['current_map'].shape}")
+                print(f"  placed_mask: {state_batch['placed_mask'].shape}")
+                print(f"  value_density: {state_batch['value_density'].shape}")
+                print(f"  features: {state_batch['features'].shape}")
+                self._debug_shapes = True
             
             # Forward pass
             if self.use_amp:
@@ -863,8 +882,8 @@ class FastAsyncRandomizedRadiiTrainer:
                     "Epsilon": f"{current_epsilon:.3f}"
                 })
             
-            # Quick visualization
-            if current_episodes > 0:
+            # Quick visualization (disabled initially to avoid shape errors)
+            if current_episodes > 0 and current_episodes > 2000:  # Only after some training
                 self._quick_visualize(current_episodes)
             
             # Periodic evaluation
