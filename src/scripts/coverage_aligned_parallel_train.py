@@ -26,11 +26,16 @@ class CoverageAlignedEnvironment(AdvancedCirclePlacementEnv):
     """Environment with coverage-aligned reward function."""
     
     def __init__(self, map_size=128):
-        super().__init__(map_size)
         self.previous_coverage = 0.0
+        super().__init__(map_size)
         
-    def reset(self, weighted_matrix):
+    def reset(self, weighted_matrix=None):
         """Reset environment and coverage tracking."""
+        if weighted_matrix is None:
+            # Called from parent __init__, create a dummy matrix
+            from src.algorithms.dqn_agent import random_seeder
+            weighted_matrix = random_seeder(self.map_size, time_steps=1000)
+        
         result = super().reset(weighted_matrix)
         self.previous_coverage = 0.0
         return result
