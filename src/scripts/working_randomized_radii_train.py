@@ -119,16 +119,16 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         # Calculate new coverage after action
         new_coverage = 1 - (self.current_map.sum() / (self.original_map.sum() + 1e-8))
         
-        # SIMPLE, WORKING REWARD FUNCTION
+        # SIMPLE, WORKING REWARD FUNCTION (with reasonable scaling)
         reward = 0.0
         
-        # 1. Basic reward: value collected
-        reward += included_weight
+        # 1. Basic reward: value collected (scaled down)
+        reward += included_weight * 0.1  # Scale down the raw values
         
-        # 2. Coverage improvement bonus
+        # 2. Coverage improvement bonus (scaled down)
         coverage_improvement = new_coverage - current_coverage
         if coverage_improvement > 0:
-            reward += coverage_improvement * 100.0
+            reward += coverage_improvement * 10.0  # Reduced from 100.0
         
         # 3. Overlap penalty
         reward -= overlap_penalty
@@ -143,16 +143,16 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         self.current_radius_idx += 1
         done = self.current_radius_idx >= len(self.radii)
         
-        # Final bonus for good coverage
+        # Final bonus for good coverage (scaled down)
         if done:
             if new_coverage > 0.8:
-                reward += 50.0
+                reward += 10.0  # Reduced from 50.0
             elif new_coverage > 0.6:
-                reward += 20.0
+                reward += 5.0   # Reduced from 20.0
             elif new_coverage > 0.4:
-                reward += 10.0
+                reward += 2.0   # Reduced from 10.0
             elif new_coverage < 0.2:
-                reward -= 10.0
+                reward -= 5.0   # Reduced from 10.0
         
         # Update coverage tracking
         self.coverage_history.append(new_coverage)
@@ -360,11 +360,16 @@ class ThreadSafeReplayBuffer:
         with self.lock:
             if len(self.buffer) < batch_size:
                 return None
-            return np.random.choice(self.buffer[:len(self.buffer)], batch_size, replace=False).tolist()
+            # Use random indices instead of np.random.choice to avoid shape issues
+            available_buffer = [exp for exp in self.buffer[:len(self.buffer)] if exp is not None]
+            if len(available_buffer) < batch_size:
+                return None
+            indices = np.random.choice(len(available_buffer), batch_size, replace=False)
+            return [available_buffer[i] for i in indices]
     
     def __len__(self):
         with self.lock:
-            return len(self.buffer)
+            return len([exp for exp in self.buffer if exp is not None])
 
 
 class WorkingRandomizedRadiiTrainer:
@@ -509,6 +514,18 @@ class WorkingRandomizedRadiiTrainer:
             return None
         
         try:
+            # Debug: Print batch info on first training step
+            if self.training_step == 0:
+                print(f"Debug - First training batch:")
+                print(f"  Batch size: {len(batch)}")
+                if batch:
+                    print(f"  Experience structure: {type(batch[0])}")
+                    if len(batch[0]) == 5:
+                        state, action, reward, next_state, done = batch[0]
+                        print(f"  State keys: {list(state.keys()) if isinstance(state, dict) else type(state)}")
+                        print(f"  Action: {action}")
+                        print(f"  Reward: {reward}")
+                        print(f"  Done: {done}")
             state_batch, actions, rewards, next_states, dones = self._prepare_batch_tensors_optimized(batch)
             
             # Convert actions to indices
