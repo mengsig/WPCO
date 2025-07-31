@@ -190,6 +190,11 @@ class EnhancedRandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
             elif new_coverage < 0.2:
                 reward -= 5.0
         
+        # IMPORTANT: Normalize and clip reward to prevent Q-value explosion
+        # This helps stabilize training and prevent increasing loss
+        reward = reward / 100.0  # Scale down large rewards
+        reward = np.clip(reward, -10.0, 10.0)  # Clip to reasonable range
+        
         # Update coverage tracking
         self.coverage_history.append(new_coverage)
         self.previous_coverage = new_coverage
