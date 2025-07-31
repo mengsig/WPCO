@@ -217,7 +217,13 @@ class AdvancedCirclePlacementEnv:
         if self.current_radius_idx >= len(self.radii):
             return None
 
+        #circle context
         radius = self.radii[self.current_radius_idx]
+        max_circles = 20
+        radii_encoding = np.zeros(max_circles)
+        for i, r in enumerate(self.radii[:max_circles]):
+            radii_encoding[i] = r / 20.0
+        remaining_radii = self.radii[self.current_radius_idx:]
 
         # Extract strategic features
         features = self.feature_extractor.extract_features(self.current_map, radius)
@@ -229,6 +235,10 @@ class AdvancedCirclePlacementEnv:
             "value_density": self._get_value_density_map(),
             "features": self._encode_features(features, radius),
             "raw_features": features,  # For visualization
+            "all_radii_encoding": radii_encoding,
+            "remaining_circles": len(remaining_radii),
+            "placement_progress": self.current_radius_idx / len(self.radii),
+            "largest_remaining": max(remaining_radii) / 20.0 if remaining_radii else 0,
         }
 
         return state_dict
