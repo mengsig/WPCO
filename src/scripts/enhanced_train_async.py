@@ -248,10 +248,26 @@ class AsyncEnhancedTrainer:
         self.training_step = 0
         self.episodes_completed = 0
         
-        # Periodic checkers
-        self.save_checker = RobustPeriodicChecker(config.get('save_freq', 1000))
-        self.eval_checker = RobustPeriodicChecker(config.get('eval_freq', 500))
+        # Calculate save frequencies based on total episodes
+        total_episodes = config.get('episodes', 100000)
+        n_model_saves = config.get('n_model_saves', 20)
+        n_image_saves = config.get('n_image_saves', 100)
+        
+        # Periodic checkers with calculated frequencies
+        model_save_freq = max(100, total_episodes // n_model_saves)
+        image_save_freq = max(100, total_episodes // n_image_saves)
+        eval_freq = max(100, total_episodes // 50)  # ~50 evaluations
+        
+        self.model_save_checker = RobustPeriodicChecker(model_save_freq)
+        self.image_save_checker = RobustPeriodicChecker(image_save_freq)
+        self.eval_checker = RobustPeriodicChecker(eval_freq)
         self.model_broadcast_checker = RobustPeriodicChecker(100)  # Broadcast model every 100 episodes
+        
+        print(f"Save frequencies - Models: every {model_save_freq} episodes, Images: every {image_save_freq} episodes")
+        
+        # Create directories for organized saving
+        os.makedirs('checkpoints', exist_ok=True)
+        os.makedirs('visualizations', exist_ok=True)
         
         # Start workers
         self.workers = []
@@ -391,8 +407,12 @@ class AsyncEnhancedTrainer:
                     print(f"Curriculum difficulty: {self.curriculum_difficulty.value:.2f}")
             
             # Save checkpoint
-            if self.save_checker.should_execute(self.episodes_completed):
+            if self.model_save_checker.should_execute(self.episodes_completed):
                 self._save_checkpoint(best_coverage)
+            
+            # Save visualization
+            if self.image_save_checker.should_execute(self.episodes_completed):
+                self._save_visualization(recent_coverage)
             
             time.sleep(0.001)  # Small delay to prevent CPU spinning
         
@@ -417,9 +437,62 @@ class AsyncEnhancedTrainer:
             'episode_coverage': self.episode_coverage[-1000:]
         }
         
-        filename = f'enhanced_async_ep{self.episodes_completed}_cov{best_coverage:.0%}.pth'
+        filename = f'checkpoints/enhanced_async_ep{self.episodes_completed:06d}_cov{best_coverage:.0%}.pth'
         torch.save(checkpoint, filename)
-        print(f"\nSaved checkpoint: {filename}")
+        print(f"\n💾 Saved model checkpoint: {filename}")
+    
+    def _save_visualization(self, recent_coverage: float):
+        """Save visualization of training progress."""
+        try:
+            # Create figure with training metrics
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            
+            # Coverage over time
+            axes[0, 0].plot(self.episode_coverage)
+            axes[0, 0].axhline(y=0.37, color='r', linestyle='--', alpha=0.5, label='Previous plateau')
+            axes[0, 0].set_title('Coverage Over Episodes')
+            axes[0, 0].set_xlabel('Episode')
+            axes[0, 0].set_ylabel('Coverage')
+            axes[0, 0].legend()
+            axes[0, 0].grid(True, alpha=0.3)
+            
+            # Rewards over time
+            axes[0, 1].plot(self.episode_rewards)
+            axes[0, 1].set_title('Rewards Over Episodes')
+            axes[0, 1].set_xlabel('Episode')
+            axes[0, 1].set_ylabel('Episode Reward')
+            axes[0, 1].grid(True, alpha=0.3)
+            
+            # Loss over time
+            if self.losses:
+                axes[1, 0].plot(self.losses)
+                axes[1, 0].set_title('Training Loss')
+                axes[1, 0].set_xlabel('Training Step')
+                axes[1, 0].set_ylabel('Loss')
+                axes[1, 0].set_yscale('log')
+                axes[1, 0].grid(True, alpha=0.3)
+            
+            # Coverage distribution
+            if len(self.episode_coverage) > 100:
+                axes[1, 1].hist(self.episode_coverage[-1000:], bins=50, alpha=0.7)
+                axes[1, 1].axvline(x=recent_coverage, color='r', linestyle='--', label=f'Recent: {recent_coverage:.1%}')
+                axes[1, 1].set_title('Coverage Distribution (Last 1000 Episodes)')
+                axes[1, 1].set_xlabel('Coverage')
+                axes[1, 1].set_ylabel('Count')
+                axes[1, 1].legend()
+                axes[1, 1].grid(True, alpha=0.3)
+            
+            plt.suptitle(f'Enhanced Async Training Progress - Episode {self.episodes_completed}')
+            plt.tight_layout()
+            
+            filename = f'visualizations/progress_ep{self.episodes_completed:06d}.png'
+            plt.savefig(filename, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            print(f"\n📊 Saved visualization: {filename}")
+            
+        except Exception as e:
+            print(f"Error saving visualization: {e}")
 
 
 def create_async_config():
@@ -434,8 +507,8 @@ def create_async_config():
         'episodes': 100000,
         'buffer_size': 500000,  # Larger buffer for async
         'batch_size': 128,  # Larger batch for efficiency
-        'save_freq': 2000,
-        'eval_freq': 1000,
+        'n_model_saves': 20,  # Save 20 models over training
+        'n_image_saves': 100,  # Save 100 images over training
     }
     
     return async_config

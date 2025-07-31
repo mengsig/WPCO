@@ -428,6 +428,25 @@ class FixedRandomizedRadiiTrainer:
         self.map_diversity_stats = []
         self.worker_stats = {}
         
+        # Calculate save frequencies based on total episodes
+        n_model_saves = 20
+        n_image_saves = 100
+        
+        # Periodic checkers with calculated frequencies
+        model_save_freq = max(100, config.n_episodes // n_model_saves)
+        image_save_freq = max(100, config.n_episodes // n_image_saves)
+        eval_freq = max(100, config.n_episodes // 50)  # ~50 evaluations
+        
+        self.model_save_checker = RobustPeriodicChecker(model_save_freq)
+        self.image_save_checker = RobustPeriodicChecker(image_save_freq)
+        self.eval_checker = RobustPeriodicChecker(eval_freq)
+        
+        print(f"Save frequencies - Models: every {model_save_freq} episodes, Images: every {image_save_freq} episodes")
+        
+        # Create directories for organized saving
+        os.makedirs('checkpoints', exist_ok=True)
+        os.makedirs('visualizations', exist_ok=True)
+        
         # Initialize periodic task trackers
         self.periodic_tasks = PeriodicTaskTracker()
         
@@ -622,14 +641,17 @@ class FixedRandomizedRadiiTrainer:
     def train(self):
         """Main training loop with FIXED saving."""
         print("=" * 100)
-        print(f"FIXED RANDOMIZED RADII TRAINING WITH {self.config.n_workers} WORKERS")
+        print("FIXED RANDOMIZED RADII PARALLEL TRAINING")
         print("=" * 100)
-        print(f"Target episodes: {self.config.n_episodes:,}")
-        print(f"Batch size: {self.config.batch_size}")
-        print(f"Buffer size: {self.config.buffer_size:,}")
+        print(f"Episodes: {self.config.n_episodes}")
         print(f"Workers: {self.config.n_workers}")
-        print(f"Mixed precision: {self.use_amp}")
-        print(f"Randomized radii: 3-15 circles, radii 2-20")
+        print(f"Map size: {self.config.map_size}")
+        print(f"Device: {self.device}")
+        print(f"\nSave Configuration:")
+        print(f"  - Model checkpoints: ~20 saves (every {self.model_save_checker.interval} episodes)")
+        print(f"  - Visualizations: ~100 saves (every {self.image_save_checker.interval} episodes)")
+        print(f"  - Progress updates: ~50 times (every {self.eval_checker.interval} episodes)")
+        print(f"  - All saves in: checkpoints/ and visualizations/ directories")
         print("=" * 100)
         
         # Test save functionality immediately
@@ -692,17 +714,18 @@ class FixedRandomizedRadiiTrainer:
                     self._print_progress_update(current_episodes)
                     print(f"🔢 Episode count check: {current_episodes} episodes completed")
                 
-                # Checkpoint saving
-                if self.save_checker.should_execute(current_episodes):
+                # Model checkpoint saving
+                if self.model_save_checker.should_execute(current_episodes):
                     self._save_checkpoint(current_episodes)
-                    print(f"📁 Checkpoint triggered at episode {current_episodes}")
+                    print(f"📁 Model checkpoint triggered at episode {current_episodes}")
                     # Also do cleanup when saving
                     self._cleanup_memory()
                 
-                # Visualization
-                if self.viz_checker.should_execute(current_episodes):
-                    print(f"🎯 Major checkpoint at episode {current_episodes}")
+                # Visualization saving
+                if self.image_save_checker.should_execute(current_episodes):
+                    print(f"🎯 Visualization checkpoint at episode {current_episodes}")
                     self._quick_visualize(current_episodes)
+                    self._save_training_progress_plot(current_episodes)
             
             time.sleep(0.01)
         
@@ -767,7 +790,7 @@ class FixedRandomizedRadiiTrainer:
     def _save_checkpoint(self, episode: int):
         """Save training checkpoint with detailed error handling."""
         try:
-            checkpoint_path = f"fixed_randomized_checkpoint_episode_{episode}.pth"
+            checkpoint_path = f"checkpoints/fixed_randomized_checkpoint_episode_{episode}.pth"
             
             print(f"🔄 Attempting to save checkpoint at episode {episode}...")
             
@@ -945,11 +968,50 @@ class FixedRandomizedRadiiTrainer:
     def _quick_visualize(self, episode: int):
         """Quick visualization every 1000 episodes."""
         try:
-            save_path = f"fixed_randomized_strategy_ep{episode}.png"
+            save_path = f"visualizations/fixed_randomized_strategy_ep{episode}.png"
             self.visualize_strategy(episode, save_path)
             print(f"📸 Visualization saved: {save_path}")
         except Exception as e:
             print(f"❌ Visualization error: {e}")
+    
+    def _save_training_progress_plot(self, episode: int):
+        """Save a plot of training progress (coverage, reward, circles) over episodes."""
+        try:
+            save_path = f"visualizations/training_progress_ep{episode}.png"
+            
+            episodes = np.arange(len(self.episode_coverage))
+            plt.figure(figsize=(12, 8))
+            
+            plt.subplot(3, 1, 1)
+            plt.plot(episodes, self.episode_coverage, 'b-', linewidth=2, label='Coverage')
+            plt.title('Training Progress: Coverage Over Episodes')
+            plt.xlabel('Episode')
+            plt.ylabel('Coverage (%)')
+            plt.grid(True)
+            plt.ylim(0, 1.05)
+            
+            plt.subplot(3, 1, 2)
+            plt.plot(episodes, self.episode_rewards, 'g-', linewidth=2, label='Reward')
+            plt.title('Training Progress: Reward Over Episodes')
+            plt.xlabel('Episode')
+            plt.ylabel('Reward')
+            plt.grid(True)
+            
+            plt.subplot(3, 1, 3)
+            plt.plot(episodes, self.n_circles_history, 'r-', linewidth=2, label='Circles')
+            plt.title('Training Progress: Circles Over Episodes')
+            plt.xlabel('Episode')
+            plt.ylabel('Number of Circles')
+            plt.grid(True)
+            
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"📊 Training progress plot saved: {save_path}")
+        except Exception as e:
+            print(f"❌ Error saving training progress plot: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _cleanup(self):
         """Clean up resources."""
