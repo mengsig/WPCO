@@ -205,7 +205,7 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         return features
     
     def step(self, action):
-        """Step with normalized coverage-aligned reward function."""
+        """Step with IMPROVED reward function for better learning."""
         x, y = action
         radius = self.radii[self.current_radius_idx]
         
@@ -214,6 +214,16 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         
         # Calculate base collection value
         included_weight = compute_included(self.current_map, x, y, radius)
+        
+        # OVERLAP PENALTY - Check for overlaps with existing circles
+        overlap_penalty = 0.0
+        for px, py, pr in self.placed_circles:
+            distance = np.sqrt((x - px)**2 + (y - py)**2)
+            min_distance = radius + pr
+            if distance < min_distance:
+                # Overlap detected - heavy penalty
+                overlap_ratio = (min_distance - distance) / min_distance
+                overlap_penalty += overlap_ratio * 2.0  # Strong penalty
         
         # Update environment state
         self.placed_circles.append((x, y, radius))
@@ -232,35 +242,68 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
         
         # Calculate new coverage after action
         new_coverage = 1 - (self.current_map.sum() / self.original_map.sum())
-        
-        # NORMALIZED COVERAGE-ALIGNED REWARD FUNCTION
         coverage_improvement = new_coverage - current_coverage
         
-        # Base reward: coverage improvement normalized by theoretical maximum
-        base_reward = (coverage_improvement / max(self.max_theoretical_coverage, 0.01)) * 10.0
-        
-        # Configuration-aware bonuses
-        reward = base_reward
+        # IMPROVED REWARD FUNCTION
+        reward = 0.0
         
         if included_weight > 0:
-            # Efficiency bonus scaled by circle size
+            # 1. VALUE COLLECTION REWARD - Strong focus on collecting high values
             circle_area = np.pi * radius * radius
-            max_possible_value = circle_area * self.original_map.max()
-            efficiency = included_weight / max(max_possible_value, 1)
+            max_possible_in_circle = circle_area * self.original_map.max()
+            value_efficiency = included_weight / max(max_possible_in_circle, 1)
             
-            # Scale efficiency bonus by relative circle size
-            size_factor = radius / max(self.radii)  # Larger circles should be more efficient
-            reward += efficiency * size_factor * 0.5
+            # Scale by circle importance (larger circles should be more selective)
+            circle_importance = radius / max(self.radii)
+            value_reward = value_efficiency * (5.0 + 5.0 * circle_importance)
+            reward += value_reward
             
-            # Progress bonus - reward for making good use of remaining circles
+            # 2. COVERAGE IMPROVEMENT REWARD - Normalized by theoretical max
+            coverage_reward = (coverage_improvement / max(self.max_theoretical_coverage, 0.01)) * 8.0
+            reward += coverage_reward
+            
+            # 3. HIGH-VALUE TARGETING BONUS - Reward for targeting hot spots
+            # Calculate average value in the circle area
+            avg_value_in_circle = included_weight / max(circle_area, 1)
+            map_avg_value = self.original_map.mean()
+            if map_avg_value > 0:
+                hotspot_bonus = (avg_value_in_circle / map_avg_value - 1.0) * 2.0
+                reward += max(0, hotspot_bonus)  # Only positive bonus
+            
+            # 4. STRATEGIC PLACEMENT BONUS - Early circles should be more selective
+            progress = self.current_radius_idx / len(self.radii)
+            if progress < 0.3:  # First 30% of circles (usually the largest)
+                # Reward high-value placement more for early circles
+                selectivity_bonus = value_efficiency * 3.0
+                reward += selectivity_bonus
+            
+            # 5. REMAINING POTENTIAL BONUS - Consider future circles
             remaining_circles = len(self.radii) - self.current_radius_idx - 1
             if remaining_circles > 0:
-                progress_bonus = coverage_improvement * (1.0 + 0.1 * remaining_circles)
-                reward += progress_bonus * 0.3
+                # Bonus for leaving good opportunities for future circles
+                remaining_value = self.current_map.sum()
+                total_remaining_area = sum(np.pi * r * r for r in self.radii[self.current_radius_idx + 1:])
+                if total_remaining_area > 0:
+                    future_potential = remaining_value / total_remaining_area
+                    potential_bonus = min(future_potential / self.original_map.max(), 1.0) * 1.0
+                    reward += potential_bonus
+        
         else:
-            # Penalty for wasted circles, scaled by circle importance
-            circle_importance = radius / sum(self.radii)  # Larger circles are more important
-            reward -= 0.1 * (1.0 + circle_importance)
+            # HEAVY PENALTY for placing circles in empty areas
+            circle_importance = radius / sum(self.radii)
+            wasted_penalty = 3.0 * (1.0 + 2.0 * circle_importance)  # Stronger penalty
+            reward -= wasted_penalty
+        
+        # 6. OVERLAP PENALTY - Apply the calculated overlap penalty
+        reward -= overlap_penalty
+        
+        # 7. BOUNDARY PENALTY - Penalize circles too close to edges
+        boundary_penalty = 0.0
+        edge_distance = min(x, y, self.map_size - x, self.map_size - y)
+        if edge_distance < radius * 1.2:  # Too close to edge
+            boundary_ratio = (radius * 1.2 - edge_distance) / (radius * 1.2)
+            boundary_penalty = boundary_ratio * 1.0
+        reward -= boundary_penalty
         
         # Move to next radius
         self.current_radius_idx += 1
@@ -275,29 +318,36 @@ class RandomizedRadiiEnvironment(AdvancedCirclePlacementEnv):
             "coverage_improvement": coverage_improvement,
             "normalized_coverage": new_coverage / max(self.max_theoretical_coverage, 0.01),
             "included_weight": included_weight,
-            "efficiency": efficiency if included_weight > 0 else 0,
+            "efficiency": value_efficiency if included_weight > 0 else 0,
+            "overlap_penalty": overlap_penalty,
+            "boundary_penalty": boundary_penalty,
             "n_circles": len(self.radii),
             "max_theoretical_coverage": self.max_theoretical_coverage,
             "radii_config": self.radii.copy(),
         }
         
         if done:
-            # Final bonus based on normalized coverage achievement
+            # FINAL PERFORMANCE EVALUATION
             normalized_final_coverage = new_coverage / max(self.max_theoretical_coverage, 0.01)
             
-            if normalized_final_coverage > 0.95:
-                reward += 10.0  # Excellent - nearly optimal
-            elif normalized_final_coverage > 0.85:
-                reward += 5.0   # Very good
-            elif normalized_final_coverage > 0.75:
-                reward += 2.0   # Good
+            # Strong final bonuses for good performance
+            if normalized_final_coverage > 0.90:
+                reward += 15.0  # Excellent performance
+            elif normalized_final_coverage > 0.80:
+                reward += 10.0  # Very good performance
+            elif normalized_final_coverage > 0.70:
+                reward += 5.0   # Good performance
             elif normalized_final_coverage > 0.60:
-                reward += 1.0   # Acceptable
-            # No bonus for < 60% of theoretical maximum
+                reward += 2.0   # Acceptable performance
+            elif normalized_final_coverage > 0.50:
+                reward += 1.0   # Marginal performance
+            else:
+                # Poor performance penalty
+                reward -= 5.0 * (0.50 - normalized_final_coverage)
             
-            # Penalty for very poor performance
-            if normalized_final_coverage < 0.3:
-                reward -= 2.0
+            # Bonus for efficient use of all circles (no major overlaps)
+            if overlap_penalty < 1.0:  # Low total overlap
+                reward += 3.0
             
             return None, reward, done, info
         
@@ -348,82 +398,151 @@ class RandomizedHeuristicAgent:
         self.map_size = map_size
         
     def act(self, state_dict, env, valid_mask=None, epsilon=0.5):
-        """Choose action adapting to current configuration."""
+        """IMPROVED: Choose action with better targeting and overlap avoidance."""
         current_radius = state_dict.get("current_radius", 5)
         remaining_circles = state_dict.get("remaining_circles", 1)
         progress = state_dict.get("progress", 0.5)
+        current_map = state_dict["current_map"]
         
         if np.random.random() < epsilon:
-            # Smart exploration adapted to configuration
+            # SMART EXPLORATION with overlap avoidance
             if valid_mask is not None:
                 valid_positions = np.argwhere(valid_mask > 0.5)
                 if len(valid_positions) > 0:
-                    current_map = state_dict["current_map"]
-                    
                     weights = []
                     for pos in valid_positions:
                         x, y = pos
-                        # Calculate potential value considering circle size and remaining circles
+                        
+                        # Calculate potential value in circle
                         local_value = 0
                         for i in range(max(0, x - current_radius), min(self.map_size, x + current_radius + 1)):
                             for j in range(max(0, y - current_radius), min(self.map_size, y + current_radius + 1)):
                                 if (i - x) ** 2 + (j - y) ** 2 <= current_radius**2:
                                     local_value += current_map[i, j]
                         
-                        # Adjust weight based on configuration
-                        # Early circles (large ones) should be more selective
-                        # Later circles can be more opportunistic
-                        if progress < 0.3:  # Early circles
-                            weight = local_value * (1.0 + 0.5 * (current_radius / 20.0))
-                        else:  # Later circles
-                            weight = local_value * (1.0 + 0.2 / max(remaining_circles, 1))
+                        # Check for overlaps with existing circles
+                        overlap_penalty = 0
+                        for px, py, pr in env.placed_circles:
+                            distance = np.sqrt((x - px)**2 + (y - py)**2)
+                            min_distance = current_radius + pr
+                            if distance < min_distance * 1.1:  # Avoid near-overlaps too
+                                overlap_penalty += (min_distance * 1.1 - distance) / (min_distance * 1.1)
                         
-                        weights.append(weight)
+                        # Weight calculation with overlap avoidance
+                        base_weight = local_value
+                        
+                        # Configuration-based adjustment
+                        if progress < 0.3:  # Early circles - be very selective
+                            base_weight *= (1.0 + 1.0 * (current_radius / 20.0))
+                        elif progress < 0.7:  # Mid circles - balanced
+                            base_weight *= (1.0 + 0.5 * (current_radius / 20.0))
+                        else:  # Late circles - opportunistic
+                            base_weight *= (1.0 + 0.2 / max(remaining_circles, 1))
+                        
+                        # Apply overlap penalty
+                        final_weight = max(0.01, base_weight - overlap_penalty * base_weight * 2.0)
+                        weights.append(final_weight)
                     
                     if sum(weights) > 0:
                         weights = np.array(weights)
                         weights = weights / weights.sum()
+                        # Add some temperature to the selection for exploration
+                        weights = weights ** 1.5  # Make selection more peaked
+                        weights = weights / weights.sum()
                         idx = np.random.choice(len(valid_positions), p=weights)
                         return tuple(valid_positions[idx])
             
-            return (np.random.randint(0, self.map_size), 
-                   np.random.randint(0, self.map_size))
+            return (np.random.randint(current_radius, self.map_size - current_radius), 
+                   np.random.randint(current_radius, self.map_size - current_radius))
         else:
-            # Greedy: choose position that maximizes value considering configuration
-            current_map = state_dict["current_map"]
-            
-            best_value = -1
+            # GREEDY: Find best position with overlap avoidance and hotspot targeting
+            best_score = -float('inf')
             best_action = None
             
-            # Sample more positions for larger circles, fewer for smaller ones - OPTIMIZED
-            n_samples = max(10, min(30, int(15 + current_radius)))  # Faster calculation
+            # More samples for larger circles (they need to be more careful)
+            n_samples = max(20, min(50, int(20 + current_radius * 2)))
             
-            for _ in range(n_samples):
+            # First, find hotspots in the map
+            hotspot_threshold = current_map.mean() + current_map.std()
+            hotspots = np.argwhere(current_map > hotspot_threshold)
+            
+            # Sample around hotspots (70% of samples) and randomly (30% of samples)
+            hotspot_samples = int(n_samples * 0.7)
+            random_samples = n_samples - hotspot_samples
+            
+            candidates = []
+            
+            # Sample around hotspots
+            if len(hotspots) > 0 and hotspot_samples > 0:
+                for _ in range(hotspot_samples):
+                    # Pick a random hotspot
+                    hotspot_idx = np.random.randint(len(hotspots))
+                    hx, hy = hotspots[hotspot_idx]
+                    
+                    # Sample around the hotspot
+                    search_radius = min(current_radius * 2, 20)
+                    x = np.clip(hx + np.random.randint(-search_radius, search_radius + 1), 
+                               current_radius, self.map_size - current_radius - 1)
+                    y = np.clip(hy + np.random.randint(-search_radius, search_radius + 1), 
+                               current_radius, self.map_size - current_radius - 1)
+                    candidates.append((x, y))
+            
+            # Random samples
+            for _ in range(random_samples):
                 x = np.random.randint(current_radius, self.map_size - current_radius)
                 y = np.random.randint(current_radius, self.map_size - current_radius)
-                
-                # Calculate potential value
+                candidates.append((x, y))
+            
+            # Evaluate all candidates
+            for x, y in candidates:
+                # Calculate value collected
                 local_value = 0
                 for i in range(max(0, x - current_radius), min(self.map_size, x + current_radius + 1)):
                     for j in range(max(0, y - current_radius), min(self.map_size, y + current_radius + 1)):
                         if (i - x) ** 2 + (j - y) ** 2 <= current_radius**2:
                             local_value += current_map[i, j]
                 
-                # Configuration-aware value adjustment
-                adjusted_value = local_value
-                if progress < 0.5:  # Early circles should prioritize high-value areas
-                    adjusted_value *= (1.0 + 0.3 * (local_value / max(current_map.max(), 1)))
+                # Calculate overlap penalty
+                overlap_penalty = 0
+                for px, py, pr in env.placed_circles:
+                    distance = np.sqrt((x - px)**2 + (y - py)**2)
+                    min_distance = current_radius + pr
+                    if distance < min_distance:
+                        overlap_ratio = (min_distance - distance) / min_distance
+                        overlap_penalty += overlap_ratio * local_value * 3.0  # Heavy penalty
                 
-                if adjusted_value > best_value:
-                    best_value = adjusted_value
+                # Calculate boundary penalty
+                edge_distance = min(x, y, self.map_size - x, self.map_size - y)
+                boundary_penalty = 0
+                if edge_distance < current_radius * 1.2:
+                    boundary_ratio = (current_radius * 1.2 - edge_distance) / (current_radius * 1.2)
+                    boundary_penalty = boundary_ratio * local_value * 0.5
+                
+                # Calculate hotspot bonus
+                circle_area = np.pi * current_radius * current_radius
+                avg_value_in_circle = local_value / max(circle_area, 1)
+                map_avg = current_map.mean()
+                hotspot_bonus = 0
+                if map_avg > 0:
+                    hotspot_bonus = max(0, (avg_value_in_circle / map_avg - 1.0) * local_value * 0.5)
+                
+                # Configuration-aware scoring
+                score = local_value + hotspot_bonus - overlap_penalty - boundary_penalty
+                
+                # Early circles should be more selective about high-value areas
+                if progress < 0.3:
+                    score += hotspot_bonus * 2.0  # Double hotspot bonus for early circles
+                
+                if score > best_score:
+                    best_score = score
                     best_action = (x, y)
             
             if best_action is not None:
                 return best_action
             
             # Fallback
-            return (np.random.randint(0, self.map_size), 
-                   np.random.randint(0, self.map_size))
+            return (np.random.randint(current_radius, self.map_size - current_radius), 
+                   np.random.randint(current_radius, self.map_size - current_radius))
 
 
 def randomized_radii_worker_process(worker_id: int, config: RandomizedRadiiConfig,
@@ -940,7 +1059,7 @@ class RandomizedRadiiTrainer:
         with self.epsilon_value.get_lock():
             current_epsilon = self.epsilon_value.value
         
-        print(f"\n🎯 Episode {episode:,} Progress (Randomized Radii):")
+        print(f"\n🎯 Episode {episode:,} Progress (IMPROVED Randomized Radii):")
         print(f"   Coverage: {recent_coverage:.1%} (Best: {best_coverage:.1%})")
         print(f"   Normalized Coverage: {recent_norm_coverage:.1%} (Best: {best_norm_coverage:.1%})")
         print(f"   Reward: {recent_rewards:.2f}")
@@ -949,6 +1068,13 @@ class RandomizedRadiiTrainer:
         print(f"   Epsilon: {current_epsilon:.3f}")
         print(f"   Training Steps: {self.training_step:,}")
         print(f"   Buffer: {len(self.replay_buffer):,}/{self.config.buffer_size:,}")
+        
+        # Additional debugging info
+        if len(self.episode_rewards) > 10:
+            recent_10_rewards = self.episode_rewards[-10:]
+            recent_10_coverage = self.episode_coverage[-10:]
+            print(f"   📈 Recent trend: Reward {np.mean(recent_10_rewards[-5:]):.2f} vs {np.mean(recent_10_rewards[:5]):.2f}")
+            print(f"   📈 Recent trend: Coverage {np.mean(recent_10_coverage[-5:]):.1%} vs {np.mean(recent_10_coverage[:5]):.1%}")
         
         # Configuration diversity stats
         if recent_n_circles:
