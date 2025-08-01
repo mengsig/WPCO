@@ -132,8 +132,9 @@ class SmartCirclePlacementNet(nn.Module):
         # Calculate CNN output size
         conv_out_size = (map_size // 4) * (map_size // 4) * 256
 
-        # Additional features: radius, progress, cluster info
-        feature_size = 10  # radius, progress, num_clusters, max_density, etc.
+        # Additional features: radius, progress, cluster info, AND full radii context
+        # 10 base features + 20 radii values + 20 placement status = 50 total features
+        feature_size = 50
 
         # Fully connected layers
         self.fc1 = nn.Linear(conv_out_size + feature_size, hidden_size)
@@ -217,18 +218,53 @@ class AdvancedCirclePlacementEnv:
         if self.current_radius_idx >= len(self.radii):
             return None
 
+        # Current radius and comprehensive radii context
         radius = self.radii[self.current_radius_idx]
+        max_circles = 20
+
+        # Full radii encoding with normalized values
+        radii_encoding = np.zeros(max_circles)
+        for i, r in enumerate(self.radii[:max_circles]):
+            radii_encoding[i] = r / 20.0
+
+        # Placement status for each radius
+        placement_status = np.zeros(max_circles)
+        for i in range(min(len(self.radii), max_circles)):
+            if i < self.current_radius_idx:
+                placement_status[i] = 1.0
+
+        # Remaining radii information
+        remaining_radii = self.radii[self.current_radius_idx :]
+        remaining_areas = [np.pi * r * r for r in remaining_radii]
+        total_remaining_area = sum(remaining_areas)
 
         # Extract strategic features
         features = self.feature_extractor.extract_features(self.current_map, radius)
 
-        # Create state dictionary
+        # Create state dictionary with comprehensive radii context
         state_dict = {
             "current_map": self.current_map,
             "placed_mask": self._get_placed_mask(),
             "value_density": self._get_value_density_map(),
             "features": self._encode_features(features, radius),
             "raw_features": features,  # For visualization
+            "all_radii_encoding": radii_encoding,
+            "placement_status": placement_status,
+            "remaining_circles": len(remaining_radii),
+            "placement_progress": self.current_radius_idx / len(self.radii),
+            "largest_remaining": max(remaining_radii) / 20.0 if remaining_radii else 0,
+            "total_remaining_area": total_remaining_area
+            / (self.map_size * self.map_size),
+            "current_radius": radius,
+            "all_radii": self.radii,  # Full list for reference
+            "radii_statistics": {
+                "mean": np.mean(self.radii),
+                "std": np.std(self.radii),
+                "min": min(self.radii),
+                "max": max(self.radii),
+                "total_circles": len(self.radii),
+                "unique_radii": len(set(self.radii)),
+            },
         }
 
         return state_dict
@@ -257,9 +293,17 @@ class AdvancedCirclePlacementEnv:
         return density
 
     def _encode_features(self, features, radius):
-        """Encode features as a vector."""
-        encoded = np.zeros(10)
+        """Encode features as a vector with full radii context."""
+        # Dynamic feature size based on number of radii
+        max_radii = 20  # Maximum number of radii we'll encode
+        base_features = 10
+        total_features = (
+            base_features + max_radii * 2
+        )  # radii values + placement status
 
+        encoded = np.zeros(total_features)
+
+        # === Original features (0-9) ===
         # Current radius (normalized)
         encoded[0] = radius / max(self.radii)
 
@@ -298,6 +342,18 @@ class AdvancedCirclePlacementEnv:
         placed_area = sum(np.pi * r * r for _, _, r in self.placed_circles)
         total_area = self.map_size * self.map_size
         encoded[9] = placed_area / total_area
+
+        # === NEW: Full radii context (10-49) ===
+        # Encode all radii values (normalized)
+        for i in range(min(len(self.radii), max_radii)):
+            encoded[base_features + i] = self.radii[i] / max(self.radii)
+
+        # Encode placement status (1 if already placed, 0 if not)
+        for i in range(min(len(self.radii), max_radii)):
+            if i < self.current_radius_idx:
+                encoded[base_features + max_radii + i] = 1.0
+            else:
+                encoded[base_features + max_radii + i] = 0.0
 
         return encoded
 
@@ -348,6 +404,105 @@ class AdvancedCirclePlacementEnv:
 
         return True
 
+    def analyze_future_placement_potential(self, x, y, current_radius):
+        """Analyze how placing a circle at (x, y) affects future placements."""
+        # Simulate placing the current circle
+        temp_circles = self.placed_circles + [(x, y, current_radius)]
+
+        # Count how many future circles can still fit
+        future_fit_count = 0
+        blocked_area = 0
+
+        # Check each remaining radius
+        for future_idx in range(self.current_radius_idx + 1, len(self.radii)):
+            future_radius = self.radii[future_idx]
+            can_fit_anywhere = False
+
+            # Sample positions to check if this future circle can fit somewhere
+            sample_positions = []
+            step = max(1, future_radius // 2)
+
+            for sx in range(future_radius, self.map_size - future_radius, step):
+                for sy in range(future_radius, self.map_size - future_radius, step):
+                    # Check if this position would be valid
+                    valid = True
+
+                    # Check boundaries
+                    if sx < future_radius or sx >= self.map_size - future_radius:
+                        continue
+                    if sy < future_radius or sy >= self.map_size - future_radius:
+                        continue
+
+                    # Check overlap with existing and simulated circles
+                    for px, py, pr in temp_circles:
+                        dist = np.sqrt((sx - px) ** 2 + (sy - py) ** 2)
+                        if dist < future_radius + pr:
+                            valid = False
+                            break
+
+                    if valid:
+                        can_fit_anywhere = True
+                        break
+
+                if can_fit_anywhere:
+                    break
+
+            if can_fit_anywhere:
+                future_fit_count += 1
+            else:
+                blocked_area += np.pi * future_radius * future_radius
+
+        # Calculate a score based on future placement potential
+        future_placement_ratio = future_fit_count / max(
+            1, len(self.radii) - self.current_radius_idx - 1
+        )
+        blocked_area_ratio = blocked_area / (self.map_size * self.map_size)
+
+        return {
+            "future_fit_count": future_fit_count,
+            "future_placement_ratio": future_placement_ratio,
+            "blocked_area": blocked_area,
+            "blocked_area_ratio": blocked_area_ratio,
+            "placement_efficiency": future_placement_ratio * (1 - blocked_area_ratio),
+        }
+
+    def visualize_radii_context(self):
+        """Visualize the full radii context for debugging."""
+        print("\n=== RADII CONTEXT VISUALIZATION ===")
+        print(f"Total circles to place: {len(self.radii)}")
+        print(
+            f"Current progress: {self.current_radius_idx}/{len(self.radii)} ({self.current_radius_idx / len(self.radii) * 100:.1f}%)"
+        )
+
+        print("\nRadii sequence:")
+        for i, r in enumerate(self.radii):
+            status = (
+                "✓"
+                if i < self.current_radius_idx
+                else ("→" if i == self.current_radius_idx else " ")
+            )
+            area = np.pi * r * r
+            print(f"  [{status}] Circle {i + 1}: radius={r:2d}, area={area:6.1f}")
+
+        print(f"\nPlaced circles: {len(self.placed_circles)}")
+        total_placed_area = sum(np.pi * r * r for _, _, r in self.placed_circles)
+        print(f"Total placed area: {total_placed_area:.1f}")
+
+        if self.current_radius_idx < len(self.radii):
+            remaining_radii = self.radii[self.current_radius_idx :]
+            remaining_area = sum(np.pi * r * r for r in remaining_radii)
+            print(f"\nRemaining circles: {len(remaining_radii)}")
+            print(f"Total remaining area: {remaining_area:.1f}")
+            print(f"Largest remaining radius: {max(remaining_radii)}")
+            print(f"Smallest remaining radius: {min(remaining_radii)}")
+
+        print("\nCoverage statistics:")
+        print(f"Total weight collected: {self.total_weight_collected:.1f}")
+        print(
+            f"Coverage percentage: {self.total_weight_collected / self.original_map.sum() * 100:.1f}%"
+        )
+        print("==================================\n")
+
     def step(self, action):
         """Take a step with enhanced reward shaping."""
         x, y = action
@@ -395,6 +550,20 @@ class AdvancedCirclePlacementEnv:
             if self.original_map.max() > 0:
                 density_ratio = local_density / self.original_map.max()
                 reward += 0.2 * density_ratio
+
+        # 5. NEW: Future placement potential bonus
+        if self.current_radius_idx < len(self.radii) - 1:
+            future_potential = self.analyze_future_placement_potential(x, y, radius)
+
+            # Reward based on how many future circles can still be placed
+            reward += 0.15 * future_potential["future_placement_ratio"]
+
+            # Penalty for blocking too much area for future circles
+            reward -= 0.1 * future_potential["blocked_area_ratio"]
+
+            # Extra bonus for efficient placement that preserves options
+            if future_potential["placement_efficiency"] > 0.7:
+                reward += 0.1
 
         # Update environment
         self.placed_circles.append((x, y, radius))
@@ -704,11 +873,19 @@ class GuidedDQNAgent:
         self.optimizer.step()
 
         # Soft update target network
+        self.soft_update_target_network()
+
+        return loss.item()
+
+    def update_target_network(self):
+        """Update the target network with current Q-network weights."""
+        self.target_network.load_state_dict(self.q_network.state_dict())
+
+    def soft_update_target_network(self):
+        """Perform soft update of target network parameters."""
         for target_param, param in zip(
             self.target_network.parameters(), self.q_network.parameters()
         ):
             target_param.data.copy_(
                 self.tau * param.data + (1.0 - self.tau) * target_param.data
             )
-
-        return loss.item()
