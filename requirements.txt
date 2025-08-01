@@ -4,3 +4,8 @@ numba
 torch
 tqdm
 scipy
+networkx
+pydot
+
+
+#need graphviz also
