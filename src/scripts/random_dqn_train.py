@@ -493,19 +493,19 @@ class FixedThreadSafeReplayBuffer:
 class EnhancedRandomizedRadiiConfig:
     """Configuration for enhanced randomized radii training."""
 
-    n_episodes: int = 20000  # 2 million episodes for massive simulation
+    n_episodes: int = 2000000  # 2 million episodes for massive simulation
     n_workers: int = 64  # Increased from 32 to use more cores
     map_size: int = 128
-    batch_size: int = 64  # Increased from 128
+    batch_size: int = 256  # Increased from 128
     buffer_size: int = 1000000  # Increased from 500000
     gradient_accumulation_steps: int = 4  # Increased from 2
     learning_rate: float = 5e-5  # Reduced from 1e-4
     epsilon_start: float = 1.0  # Start with full exploration
     epsilon_end: float = 0.01  # Very low final exploration
-    epsilon_decay_episodes: int = 15000  # Decay over 75% of training
+    epsilon_decay_episodes: int = 1500000  # Decay over 75% of training
     target_update_freq: int = 2000  # Increased from 1000
-    visualize_every: int = 1000  # Save image every 5000 episodes
-    checkpoint_every: int = 5000  # Backup model every 100k episodes
+    visualize_every: int = 5000  # Save image every 5000 episodes
+    checkpoint_every: int = 100000  # Backup model every 100k episodes
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
